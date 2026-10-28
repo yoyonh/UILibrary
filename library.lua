@@ -2152,12 +2152,13 @@ end
 
 -- On-screen keyboard used instead of the phone's native one. Full-width docked by default (like a
 -- normal phone keyboard); the minimise button turns it into a small draggable panel.
--- One shared instance; it follows whichever TextBox was tapped.
-local VKB_CW, VKB_CH = 414, 204 -- compact size at 1x
+-- One shared instance; it follows whichever TextBox was tapped. Everything is driven by the
+-- Library.Keyboard config (KB_DEFAULTS); the legacy Library.CustomKeyboard / KeyboardCompact /
+-- KeyboardScale fields still work. It stays inactive until a window has fully loaded, so the
+-- key-verification prompt always uses the device's own keyboard.
 local VKB_IN = TweenInfo.new(0.3, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
 local VKB_OUT = TweenInfo.new(0.2, Enum.EasingStyle.Quint, Enum.EasingDirection.In)
 local VKB_HIDDEN = 0.94
-local VKB_UNDO_MAX = 100
 
 local function VKeys(row)
 	local out = {}
@@ -2175,35 +2176,115 @@ local function VJoin(...)
 	end
 	return out
 end
-local VKB_ROWS = {
-	VJoin({"`", "~"}, {"1", "!"}, {"2", "@"}, {"3", "#"}, {"4", "$"}, {"5", "%"}, {"6", "^"}, {"7", "&"},
-		{"8", "*"}, {"9", "("}, {"0", ")"}, {"-", "_"}, {"=", "+"}, {act = "back", w = 2, icon = {"delete"}, label = "Back"}),
-	VJoin({act = "clear", w = 1.5, label = "Clear"}, VKeys("qwertyuiop"), {"[", "{"}, {"]", "}"}, {"\\", "|", w = 1.5}),
-	VJoin({act = "caps", w = 1.75, label = "Caps"}, VKeys("asdfghjkl"), {";", ":"}, {"'", "\""},
-		{act = "enter", w = 2.25, label = "Enter"}),
-	VJoin({act = "shift", w = 2.25, label = "Shift"}, VKeys("zxcvbnm"), {",", "<"}, {".", ">"}, {"/", "?"},
-		{act = "shift", w = 2.75, label = "Shift"}),
-	VJoin({act = "left", w = 1.5, icon = {"chevron-left"}, label = "<"}, {act = "right", w = 1.5, icon = {"chevron-right"}, label = ">"},
-		{act = "space", w = 9.5, label = "space"}, {act = "wordback", w = 2.5, label = "Del word"}),
-}
-local VKB_TOOLS = {
-	{act = "undo", label = "Undo"}, {act = "redo", label = "Redo"}, {act = "select", label = "Select"},
-	{act = "all", label = "All"}, {act = "cut", label = "Cut"}, {act = "copy", label = "Copy"},
-	{act = "paste", label = "Paste"}, {act = "home", label = "Home"}, {act = "end", label = "End"},
-}
-local VKB_HEADER = {
-	{act = "mode", icon = {"minimize-2"}, label = "-"},
-	{act = "hide", icon = {"keyboard-off", "chevron-down"}, label = "Hide"},
+
+-- Built-in actions. A string in a layout row or the toolbar refers to one of these by name.
+local VKB_ACTIONS = {
+	back = {icon = {"delete"}, label = "Back"}, wordback = {label = "Del word"}, clear = {label = "Clear"},
+	caps = {label = "Caps"}, shift = {label = "Shift"}, enter = {label = "Enter"}, space = {label = "space"},
+	left = {icon = {"chevron-left"}, label = "<"}, right = {icon = {"chevron-right"}, label = ">"},
+	home = {label = "Home"}, ["end"] = {label = "End"}, select = {label = "Select"}, all = {label = "All"},
+	undo = {label = "Undo"}, redo = {label = "Redo"}, cut = {label = "Cut"}, copy = {label = "Copy"}, paste = {label = "Paste"},
+	mode = {icon = {"minimize-2"}, label = "-"}, hide = {icon = {"keyboard-off", "chevron-down"}, label = "Hide"},
 }
 local VKB_REPEAT = {back = true, wordback = true, left = true, right = true, undo = true, redo = true}
 
--- Phones/tablets only; PC (and touch laptops with a keyboard) always keep the normal keyboard.
-local function UseVKeyboard()
-	local m = Library.CustomKeyboard
-	if m == false or m == "Off" then return false end
+-- Layouts: {Rows = {...}, Width = docked width fraction, CompactSize = {w, h}, Tools = toolbar override}.
+-- Row items: {"a", "A"} (shifted variant optional, letter = true follows Caps), an action name,
+-- {act = ..., w = width units, label/icon}, {text = "...", label = "..."}, {gap = units} (spacer),
+-- {act = "layout", to = "Name"}, {act = "custom", id = "name"} or {action = function(keyboard) end}.
+local VKB_LAYOUTS = {}
+VKB_LAYOUTS.Default = {
+	Rows = {
+		VJoin({"`", "~"}, {"1", "!"}, {"2", "@"}, {"3", "#"}, {"4", "$"}, {"5", "%"}, {"6", "^"}, {"7", "&"},
+			{"8", "*"}, {"9", "("}, {"0", ")"}, {"-", "_"}, {"=", "+"}, {act = "back", w = 2}),
+		VJoin({act = "clear", w = 1.5}, VKeys("qwertyuiop"), {"[", "{"}, {"]", "}"}, {"\\", "|", w = 1.5}),
+		VJoin({act = "caps", w = 1.75}, VKeys("asdfghjkl"), {";", ":"}, {"'", "\""}, {act = "enter", w = 2.25}),
+		VJoin({act = "shift", w = 2.25}, VKeys("zxcvbnm"), {",", "<"}, {".", ">"}, {"/", "?"}, {act = "shift", w = 2.75}),
+		VJoin({act = "layout", to = "Numeric", w = 1.5, label = "123"}, {act = "left", w = 1.25}, {act = "right", w = 1.25},
+			{act = "space", w = 8.5}, {act = "wordback", w = 2.5}),
+	},
+}
+VKB_LAYOUTS.Simple = {
+	Rows = {
+		VKeys("qwertyuiop"),
+		VJoin({gap = 0.5}, VKeys("asdfghjkl"), {gap = 0.5}),
+		VJoin({act = "shift", w = 1.5}, VKeys("zxcvbnm"), {act = "back", w = 1.5}),
+		VJoin({act = "layout", to = "Numeric", w = 1.5, label = "123"}, {",", ";"}, {act = "space", w = 5}, {".", ":"}, {act = "enter", w = 1.5}),
+	},
+}
+VKB_LAYOUTS.Numeric = {
+	Width = 0.5,
+	CompactSize = {240, 250},
+	Tools = false,
+	Rows = {
+		VJoin({"7"}, {"8"}, {"9"}, {act = "back"}),
+		VJoin({"4"}, {"5"}, {"6"}, {act = "clear"}),
+		VJoin({"1"}, {"2"}, {"3"}, {act = "enter"}),
+		VJoin({act = "layout", to = "Default", label = "ABC"}, {"0"}, {"."}, {"-"}),
+	},
+}
+
+local KB_DEFAULTS = {
+	Mode = "Auto",            -- "Auto": touch-only devices. "Always": every device. "Off".
+	Compact = false,          -- start as the small draggable panel
+	Scale = 1,                -- size multiplier (height when docked, whole panel when compact)
+	Dock = "Bottom",          -- "Bottom" | "Top"
+	Align = "Center",         -- "Left" | "Center" | "Right" when Width < 1
+	Width = 1,                -- docked width as a fraction of the screen width
+	Height = 0.56,            -- docked height as a fraction of the screen height
+	KeyAspect = 1.2,          -- a key is never taller than KeyAspect * its unit width
+	MaxAspect = nil,          -- optional hard cap: docked height <= panel width * MaxAspect
+	MinHeight = 190,          -- docked minimum height (px)
+	CompactSize = {414, 204}, -- compact panel size at Scale 1 (shrinks to fit small screens)
+	CompactPosition = nil,    -- Vector2 centre of the compact panel; nil = bottom centre
+	Layout = "Default",       -- starting layout
+	Tools = {"undo", "redo", "select", "all", "home", "end"}, -- toolbar; false hides it
+	ModeButton = true, HideButton = true, Preview = true, Grip = true,
+	Padding = 0.15, Gap = 0.1, KeyRadius = 0.18, -- fractions of one row height
+	PanelRadius = 10, CompactRadius = 6, TextScale = 1,
+	HeaderHeight = 1, ToolbarHeight = 0.8, -- in row heights
+	RepeatDelay = 0.4, RepeatRate = 0.05, FastRepeatAfter = 20, WordDeleteAfter = 15, -- hold-to-repeat
+	UndoLimit = 100, DoubleTapSelect = true, SwipeCaret = true, ShiftOnce = true, CloseOnEnter = true,
+	CapitalizeFirst = false,  -- Shift is on when a box opens empty
+	Animations = true, Transparency = 0,
+	-- Colour overrides (Color3); anything nil comes from the window theme:
+	-- Panel, Stroke, Grip, Field, FieldStroke, Text, Placeholder, Caret, Selection,
+	-- Key, KeyText, ActionKey, ActionText, Tool, ToolText, Enter, EnterText, Active, Pressed
+	Colors = {},
+}
+
+local VKB = {Covers = setmetatable({}, {__mode = "k"}), Held = {}, Undo = {}, Redo = {}, Actions = {},
+	Hooks = {Open = {}, Close = {}, Key = {}, Change = {}, Layout = {}, Enter = {}}, Ready = true,
+	Shift = false, Caps = false, SelectMode = false}
+VKB.Cfg = {Colors = {}}
+for k, v in pairs(KB_DEFAULTS) do
+	if type(v) == "table" then
+		local t = {}
+		for a, b in pairs(v) do t[a] = b end
+		VKB.Cfg[k] = t
+	else
+		VKB.Cfg[k] = v
+	end
+end
+VKB.DefaultTheme = {Theme = Library.Themes.Dark, Accent = rgb(255, 89, 89), AccentAlpha = 1}
+
+local function NormMode(m)
+	if m == false or m == "Off" or m == "off" or m == "Never" then return "Off" end
+	if m == "Always" or m == "always" or m == "Force" then return "Always" end
+	return "Auto"
+end
+-- Phones/tablets only; PC (and touch laptops with a keyboard) keep the normal keyboard.
+local function TouchDevice()
 	return UserInputService.TouchEnabled == true
 		and UserInputService.KeyboardEnabled ~= true
 		and UserInputService.MouseEnabled ~= true
+end
+local function UseVKeyboard()
+	if not VKB.Ready then return false end
+	local m = NormMode(VKB.Cfg.Mode)
+	if m == "Off" then return false end
+	if m == "Always" then return true end
+	return TouchDevice()
 end
 
 local function RichEscape(s)
@@ -2268,8 +2349,6 @@ local function OneLine(s)
 	return (tostring(s):gsub("\r\n", " "):gsub("[\r\n\t]", " "))
 end
 
-local VKB = {Covers = setmetatable({}, {__mode = "k"}), Held = {}, Undo = {}, Redo = {}}
-
 local function InputLive(input)
 	local st = input.UserInputState
 	return st == Enum.UserInputState.Begin or st == Enum.UserInputState.Change
@@ -2294,6 +2373,80 @@ local function PointerPos(input)
 	return ok and p + inset or p
 end
 
+-- Hooks return false to cancel the event (Key / Enter) where that applies.
+function VKB.Fire(name, ...)
+	local list = VKB.Hooks[name]
+	if not list then return true end
+	local allow = true
+	for _, fn in ipairs(CopyList(list)) do
+		if SafeCall(fn, ...) == false then allow = false end
+	end
+	return allow
+end
+function VKB.Hook(name, fn)
+	local list = VKB.Hooks[name]
+	if type(fn) ~= "function" or not list then return function() end end
+	table.insert(list, fn)
+	return function()
+		local i = IndexOf(list, fn)
+		if i then table.remove(list, i) end
+	end
+end
+
+-- Normalises a layout entry (string shorthand, action name or table) into a key spec.
+local function NormKey(spec)
+	if type(spec) == "string" then
+		if VKB_ACTIONS[spec] then
+			spec = {act = spec}
+		elseif (utf8.len(spec) or #spec) == 1 then
+			spec = {spec, spec:upper(), letter = spec:match("%a") ~= nil}
+		else
+			spec = {text = spec, label = spec}
+		end
+	end
+	if type(spec) ~= "table" then return nil end
+	if spec.gap then return {spacer = true, w = tonumber(spec.gap) or 1} end
+	if type(spec.action) == "function" then spec.act = spec.act or "custom" end
+	if spec.act and VKB_ACTIONS[spec.act] then
+		local base = VKB_ACTIONS[spec.act]
+		if spec.label == nil and spec.icon == nil then
+			spec.label, spec.icon = base.label, base.icon
+		end
+	end
+	if spec.text ~= nil and spec.label == nil then spec.label = tostring(spec.text) end
+	if spec.act and spec.label == nil and spec.icon == nil then spec.label = spec.id or spec.act end
+	return spec
+end
+local function NormLayout(spec)
+	if type(spec) ~= "table" then return nil end
+	if spec.Rows == nil and type(spec[1]) == "table" then spec = {Rows = spec} end
+	if type(spec.Rows) ~= "table" or #spec.Rows == 0 then return nil end
+	local rows, cols = {}, 1
+	for _, row in ipairs(spec.Rows) do
+		local out, sum = {}, 0
+		for _, item in ipairs(row) do
+			local k = NormKey(item)
+			if k then
+				table.insert(out, k)
+				sum = sum + (tonumber(k.w) or 1)
+			end
+		end
+		out.sum = sum
+		if sum > cols then cols = sum end
+		table.insert(rows, out)
+	end
+	return {Rows = rows, Cols = cols, Width = spec.Width, CompactSize = spec.CompactSize, Tools = spec.Tools,
+		Height = spec.Height, KeyAspect = spec.KeyAspect}
+end
+for name, spec in pairs(VKB_LAYOUTS) do VKB_LAYOUTS[name] = NormLayout(spec) end
+
+function VKB.CurrentLayout()
+	local name = VKB.LayoutName or VKB.Cfg.Layout or "Default"
+	local lay = VKB_LAYOUTS[name] or VKB_LAYOUTS.Default
+	if lay ~= VKB_LAYOUTS[name] then VKB.LayoutName = "Default" end
+	return lay
+end
+
 function VKB.MakeKey(spec, parent)
 	local b = Create("TextButton", {BorderSizePixel = 0, Text = "", Parent = parent})
 	local corner = Corner(b, 4)
@@ -2304,7 +2457,7 @@ function VKB.MakeKey(spec, parent)
 		if not k.icon.Visible then k.icon = nil end
 	end
 	if not k.icon then
-		k.label = Label(b, spec.label or spec[1], {Align = Enum.TextXAlignment.Center, Weight = spec.act and "SemiBold" or "Medium"})
+		k.label = Label(b, spec.label or spec[1] or "", {Align = Enum.TextXAlignment.Center, Weight = spec.act and "SemiBold" or "Medium"})
 	end
 	b.InputBegan:Connect(function(input)
 		if IsClickOrTouch(input) then VKB.Press(k, input) end
@@ -2313,10 +2466,47 @@ function VKB.MakeKey(spec, parent)
 	return k
 end
 
+-- (Re)creates the toolbar and the character rows for the current layout; header keys persist.
+function VKB.BuildKeys()
+	if not VKB.Panel then return end
+	for _, k in ipairs(VKB.ToolKeys or {}) do pcall(function() k.btn:Destroy() end) end
+	for _, row in ipairs(VKB.RowKeys or {}) do
+		for _, k in ipairs(row) do
+			if k.btn then pcall(function() k.btn:Destroy() end) end
+		end
+	end
+	VKB.Keys = {}
+	for _, k in ipairs(VKB.HeaderKeys) do table.insert(VKB.Keys, k) end
+	VKB.ToolKeys, VKB.RowKeys = {}, {}
+	local lay = VKB.CurrentLayout()
+	local tools = lay.Tools
+	if tools == nil then tools = VKB.Cfg.Tools end
+	if type(tools) == "table" then
+		for _, t in ipairs(tools) do
+			local spec = NormKey(t)
+			if spec and not spec.spacer then
+				local k = VKB.MakeKey(spec, VKB.Panel)
+				k.place = "tool"
+				table.insert(VKB.ToolKeys, k)
+			end
+		end
+	end
+	for r, row in ipairs(lay.Rows) do
+		VKB.RowKeys[r] = {sum = row.sum}
+		for _, spec in ipairs(row) do
+			if spec.spacer then
+				table.insert(VKB.RowKeys[r], {spacer = true, spec = spec})
+			else
+				table.insert(VKB.RowKeys[r], VKB.MakeKey(spec, VKB.Panel))
+			end
+		end
+	end
+end
+
 function VKB.Build()
 	if VKB.Keys then return end
 	VKB.Keys = {}
-	if VKB.Compact == nil then VKB.Compact = Library.KeyboardCompact == true end
+	if VKB.Compact == nil then VKB.Compact = Library.KeyboardCompact == true or VKB.Cfg.Compact == true end
 	local gui = Create("ScreenGui", {
 		Name = "ZeninKeyboard",
 		ResetOnSpawn = false,
@@ -2356,41 +2546,18 @@ function VKB.Build()
 		Parent = field,
 	})
 	local caret = Create("Frame", {Size = UDim2.fromOffset(2, 14), BorderSizePixel = 0, Parent = field})
-	-- Fallback paste target when the executor can't read the clipboard: long-press it and pick Paste.
-	local catcher = Create("TextBox", {
-		Size = UDim2.fromScale(1, 1),
-		BorderSizePixel = 0,
-		Text = "",
-		PlaceholderText = "Long-press here, then tap Paste",
-		ClearTextOnFocus = false,
-		Weight = "Medium",
-		TextXAlignment = Enum.TextXAlignment.Center,
-		Visible = false,
-		ZIndex = 3,
-		Parent = field,
-	})
 
 	VKB.Gui, VKB.Root, VKB.Scaler, VKB.Panel, VKB.PanelCorner = gui, root, scaler, panel, panelCorner
 	VKB.Stroke, VKB.Grip, VKB.GripIcon, VKB.Field, VKB.FieldStroke = stroke, grip, gripIcon, field, fieldStroke
-	VKB.Preview, VKB.Measure, VKB.Caret, VKB.Catcher = preview, measure, caret, catcher
+	VKB.Preview, VKB.Measure, VKB.Caret = preview, measure, caret
 
-	VKB.HeaderKeys, VKB.ToolKeys, VKB.RowKeys = {}, {}, {}
-	for _, spec in ipairs(VKB_HEADER) do
-		local k = VKB.MakeKey(spec, panel)
+	VKB.HeaderKeys = {}
+	for _, name in ipairs({"mode", "hide"}) do
+		local k = VKB.MakeKey(NormKey(name), panel)
 		k.place = "header"
 		table.insert(VKB.HeaderKeys, k)
 	end
-	for _, spec in ipairs(VKB_TOOLS) do
-		local k = VKB.MakeKey(spec, panel)
-		k.place = "tool"
-		table.insert(VKB.ToolKeys, k)
-	end
-	for r, row in ipairs(VKB_ROWS) do
-		VKB.RowKeys[r] = {}
-		for _, spec in ipairs(row) do
-			table.insert(VKB.RowKeys[r], VKB.MakeKey(spec, panel))
-		end
-	end
+	VKB.BuildKeys()
 
 	grip.InputBegan:Connect(function(input)
 		if not IsClickOrTouch(input) or not VKB.Compact then return end
@@ -2398,15 +2565,8 @@ function VKB.Build()
 		VKB.Track()
 	end)
 	field.InputBegan:Connect(function(input)
-		if IsClickOrTouch(input) and VKB.Target and not catcher.Visible then VKB.FieldDown(input) end
+		if IsClickOrTouch(input) and VKB.Target then VKB.FieldDown(input) end
 	end)
-	catcher:GetPropertyChangedSignal("Text"):Connect(function()
-		if catcher.Text == "" then return end
-		local s = catcher.Text
-		VKB.HideCatcher()
-		VKB.Insert(OneLine(s), "paste")
-	end)
-	catcher.FocusLost:Connect(function() VKB.HideCatcher() end)
 
 	-- Screen rotation / resize.
 	gui:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
@@ -2420,44 +2580,78 @@ function VKB.Viewport()
 	return vp
 end
 
--- Sizes every part from the panel size, so the same layout works full-width and compact.
+function VKB.ScaleMult()
+	return math.clamp(tonumber(Library.KeyboardScale) or tonumber(VKB.Cfg.Scale) or 1, 0.3, 3)
+end
+
+-- Everything is derived from one row height, so the proportions are identical at any panel
+-- size, in both docked and compact mode and for every layout.
 function VKB.Layout()
+	if not VKB.Root then return end
+	local C = VKB.Cfg
 	local vp = VKB.Viewport()
-	local mult = tonumber(Library.KeyboardScale) or 1
+	local mult = VKB.ScaleMult()
+	local lay = VKB.CurrentLayout()
+	local hasTools = #VKB.ToolKeys > 0
+	local showMode, showHide = C.ModeButton ~= false, C.HideButton ~= false
+	local hasHeader = C.Preview ~= false or showMode or showHide or VKB.Compact
+	local headH = hasHeader and (tonumber(C.HeaderHeight) or 1) or 0
+	local toolH = hasTools and (tonumber(C.ToolbarHeight) or 0.8) or 0
+	local bands = #lay.Rows + (hasTools and 1 or 0) + (hasHeader and 1 or 0)
+	local padU, gapU = math.max(0, tonumber(C.Padding) or 0.15), math.max(0, tonumber(C.Gap) or 0.1)
+	local hUnits = #lay.Rows + headH + toolH + padU * 2 + gapU * (bands - 1)
+	local cols = math.max(1, lay.Cols)
+
 	local w, h
 	if VKB.Compact then
-		local fit = math.max(0.5, math.min(1, (vp.X - 16) / VKB_CW, (vp.Y * 0.6) / VKB_CH)) * mult
-		w, h = math.floor(VKB_CW * fit), math.floor(VKB_CH * fit)
+		local cs = lay.CompactSize or C.CompactSize or {414, 204}
+		local cw, ch = tonumber(cs[1]) or 414, tonumber(cs[2]) or 204
+		local fit = math.max(0.5, math.min(1, (vp.X - 16) / cw, (vp.Y * 0.6) / ch)) * mult
+		w, h = math.floor(cw * fit), math.floor(ch * fit)
 		VKB.Root.AnchorPoint = Vector2.new(0.5, 0.5)
-		VKB.PanelCorner.CornerRadius = UDim.new(0, 6)
+		VKB.PanelCorner.CornerRadius = UDim.new(0, tonumber(C.CompactRadius) or 6)
 	else
-		w = vp.X
-		h = math.min(vp.Y * 0.56, vp.X * 0.62) * mult
-		h = math.floor(math.clamp(h, math.min(190, vp.Y * 0.85), vp.Y * 0.85))
-		VKB.Root.AnchorPoint = Vector2.new(0.5, 1)
-		VKB.Root.Position = UDim2.new(0.5, 0, 1, 0)
-		VKB.PanelCorner.CornerRadius = UDim.new(0, 10)
+		local frac = math.clamp(tonumber(lay.Width) or tonumber(C.Width) or 1, 0.2, 1)
+		w = math.floor(vp.X * frac)
+		-- Key height is capped relative to its width, so a 4-column pad can be tall and a
+		-- 15-column keyboard stays flat in landscape.
+		local aspect = math.max(0.3, tonumber(lay.KeyAspect) or tonumber(C.KeyAspect) or 1.2)
+		-- Largest row height whose unit width still satisfies u <= aspect * unit (unit depends on u
+		-- through the padding/gap, hence the solved form).
+		local uMax = aspect * w / math.max(0.1, cols + aspect * (2 * padU - gapU))
+		local hMax = uMax * hUnits
+		if tonumber(C.MaxAspect) then hMax = math.min(hMax, w * C.MaxAspect) end
+		h = math.min(vp.Y * (tonumber(lay.Height) or tonumber(C.Height) or 0.56), hMax) * mult
+		h = math.floor(math.clamp(h, math.min(tonumber(C.MinHeight) or 190, vp.Y * 0.85), vp.Y * 0.85))
+		local ax = C.Align == "Left" and 0 or (C.Align == "Right" and 1 or 0.5)
+		if C.Dock == "Top" then
+			VKB.Root.AnchorPoint = Vector2.new(ax, 0)
+			VKB.Root.Position = UDim2.fromScale(ax, 0)
+		else
+			VKB.Root.AnchorPoint = Vector2.new(ax, 1)
+			VKB.Root.Position = UDim2.fromScale(ax, 1)
+		end
+		VKB.PanelCorner.CornerRadius = UDim.new(0, tonumber(C.PanelRadius) or 10)
 	end
 	VKB.Size = Vector2.new(w, h)
 	VKB.Root.Size = UDim2.fromOffset(w, h)
 
-	local pad = math.clamp(math.floor(h * 0.03 + 0.5), 4, 10)
-	local gap = math.clamp(math.floor(math.min(w * 0.006, h * 0.016) + 0.5), 2, 6)
-	-- Header 1 row, toolbar 0.8 row, keys 5 rows.
-	local rowH = (h - pad * 2 - gap * 6) / 6.8
-	local headH, toolH = rowH, rowH * 0.8
-	local unit = (w - pad * 2 + gap) / 15
+	local u = h / hUnits -- one row
+	local pad, gap = u * padU, u * gapU
+	local unit = (w - pad * 2 + gap) / cols
 	VKB.Unit = unit
-	local keyText = math.clamp(math.floor(rowH * 0.42), 10, 22)
-	local actText = math.clamp(math.floor(rowH * 0.32), 9, 16)
-	local iconSz = math.clamp(math.floor(rowH * 0.45), 10, 20)
-	local radius = math.clamp(math.floor(rowH * 0.18), 3, 8)
+	local ts = tonumber(C.TextScale) or 1
+	local base = math.min(u, unit * 1.3) * ts -- narrow keys shrink their text, never overflow
+	local keyText = math.max(8, math.floor(base * 0.42 + 0.5))
+	local actText = math.max(7, math.floor(base * 0.32 + 0.5))
+	local iconSz = math.max(8, math.floor(base * 0.45 + 0.5))
+	local radius = math.max(2, math.floor(u * (tonumber(C.KeyRadius) or 0.18) + 0.5))
 
-	local function Put(k, x, y, kw, kh, ts)
+	local function Put(k, x, y, kw, kh, textSize)
 		k.btn.Position = UDim2.fromOffset(math.floor(x + 0.5), math.floor(y + 0.5))
-		k.btn.Size = UDim2.fromOffset(math.floor(kw + 0.5), math.floor(kh + 0.5))
+		k.btn.Size = UDim2.fromOffset(math.max(1, math.floor(kw + 0.5)), math.max(1, math.floor(kh + 0.5)))
 		k.corner.CornerRadius = UDim.new(0, radius)
-		if k.label then k.label.TextSize = ts end
+		if k.label then k.label.TextSize = textSize end
 		if k.icon then
 			k.icon.Size = UDim2.fromOffset(iconSz, iconSz)
 			k.icon.Position = UDim2.new(0.5, -iconSz / 2, 0.5, -iconSz / 2)
@@ -2465,58 +2659,69 @@ function VKB.Layout()
 	end
 
 	-- Header: [grip] [text field] [mode] [hide]
-	local y = pad
-	local x = pad
-	VKB.Grip.Visible = VKB.Compact
-	if VKB.Compact then
-		local gw = math.max(22, headH * 0.9)
+	local y, x = pad, pad
+	local hh = u * headH
+	VKB.Grip.Visible = hasHeader and VKB.Compact and C.Grip ~= false
+	if VKB.Grip.Visible then
+		local gw = math.max(22, hh * 0.9)
 		VKB.Grip.Position = UDim2.fromOffset(x, y)
-		VKB.Grip.Size = UDim2.fromOffset(gw, headH)
+		VKB.Grip.Size = UDim2.fromOffset(gw, hh)
 		x = x + gw + gap
 	end
 	local right = w - pad
 	for i = #VKB.HeaderKeys, 1, -1 do
 		local k = VKB.HeaderKeys[i]
-		local bw = headH * 1.25
-		right = right - bw
-		Put(k, right, y, bw, headH, actText)
-		right = right - gap
+		local show = hasHeader and ((k.spec.act == "mode" and showMode) or (k.spec.act == "hide" and showHide))
+		k.btn.Visible = show
+		if show then
+			local bw = hh * 1.25
+			right = right - bw
+			Put(k, right, y, bw, hh, actText)
+			right = right - gap
+		end
 	end
+	VKB.Field.Visible = hasHeader and C.Preview ~= false
 	VKB.Field.Position = UDim2.fromOffset(math.floor(x), y)
-	VKB.Field.Size = UDim2.fromOffset(math.floor(right - x), math.floor(headH))
-	local fieldText = math.clamp(math.floor(headH * 0.45), 11, 18)
-	VKB.Preview.TextSize, VKB.Measure.TextSize, VKB.Catcher.TextSize = fieldText, fieldText, fieldText
+	VKB.Field.Size = UDim2.fromOffset(math.max(1, math.floor(right - x)), math.floor(hh))
+	local fieldText = math.max(8, math.floor(hh * 0.45 * ts + 0.5))
+	VKB.Preview.TextSize, VKB.Measure.TextSize = fieldText, fieldText
 	VKB.Caret.Size = UDim2.fromOffset(2, math.floor(fieldText * 1.25))
 	VKB.BarW = nil
+	if hasHeader then y = y + hh + gap end
 
 	-- Toolbar
-	y = y + headH + gap
-	local n = #VKB.ToolKeys
-	local tw = (w - pad * 2 - gap * (n - 1)) / n
-	for i, k in ipairs(VKB.ToolKeys) do
-		Put(k, pad + (i - 1) * (tw + gap), y, tw, toolH, actText)
+	if hasTools then
+		local n = #VKB.ToolKeys
+		local th = u * toolH
+		local tw = (w - pad * 2 - gap * (n - 1)) / n
+		for i, k in ipairs(VKB.ToolKeys) do
+			Put(k, pad + (i - 1) * (tw + gap), y, tw, th, actText)
+		end
+		y = y + th + gap
 	end
 
-	-- Keys
-	y = y + toolH + gap
+	-- Keys; rows narrower than the widest row are centred.
 	for _, row in ipairs(VKB.RowKeys) do
-		x = pad
+		x = pad + (cols - (row.sum or cols)) * unit / 2
 		for _, k in ipairs(row) do
-			local kw = (k.spec.w or 1) * unit - gap
-			Put(k, x, y, kw, rowH, k.spec.act and actText or keyText)
+			local kw = (tonumber(k.spec.w) or 1) * unit - gap
+			if not k.spacer then
+				Put(k, x, y, kw, u, k.spec.act and actText or keyText)
+			end
 			x = x + kw + gap
 		end
-		y = y + rowH + gap
+		y = y + u + gap
 	end
 
 	if VKB.Compact then
-		local p = VKB.Pos or Vector2.new(vp.X / 2, vp.Y - h / 2 - 12)
+		local p = VKB.Pos or C.CompactPosition or Vector2.new(vp.X / 2, vp.Y - h / 2 - 12)
 		VKB.Place(p.X, p.Y)
 	end
 	if VKB.Target then
 		VKB.Labels()
 		VKB.Render()
 	end
+	VKB.Fire("Layout", VKB.LayoutName or "Default", VKB.Size, VKB.Compact)
 end
 
 -- Keeps the compact keyboard fully on screen; position is the panel centre.
@@ -2531,11 +2736,12 @@ end
 
 function VKB.SetCompact(b)
 	b = b == true
+	VKB.Cfg.Compact = b
 	if VKB.Compact == b then return end
 	VKB.Compact = b
 	if not VKB.Root then return end
 	VKB.Layout()
-	if VKB.Shown and VKB.Target then
+	if VKB.Shown and VKB.Target and VKB.Cfg.Animations ~= false then
 		StopTweens(VKB.Scaler)
 		VKB.Scaler.Scale = 0.97
 		Tween(VKB.Scaler, VKB_IN, {Scale = 1})
@@ -2543,63 +2749,85 @@ function VKB.SetCompact(b)
 	VKB.Labels()
 end
 
+-- Switches the character rows (and toolbar) to a named layout.
+function VKB.UseLayout(name, quiet)
+	name = VKB_LAYOUTS[name] and name or "Default"
+	local changed = VKB.LayoutName ~= name
+	VKB.LayoutName = name
+	if not VKB.Root then return end
+	if changed or #VKB.RowKeys == 0 then VKB.BuildKeys() end
+	if quiet then return end
+	VKB.Layout()
+	VKB.Labels()
+	VKB.Paint()
+end
+
 local function ThemeSrc()
-	local src = VKB.Opts and VKB.Opts.theme
-	if not src then return nil end
-	return src.Theme, src.Accent, src.AccentAlpha or 1
+	local src = VKB.Opts and VKB.Opts.theme or VKB.DefaultTheme
+	return src.Theme or Library.Themes.Dark, src.Accent or VKB.DefaultTheme.Accent, src.AccentAlpha or 1
+end
+local function Col(name, fallback)
+	local c = VKB.Cfg.Colors and VKB.Cfg.Colors[name]
+	if typeof(c) == "Color3" then return c end
+	return fallback
 end
 
 function VKB.Paint()
+	if not VKB.Panel then return end
 	local T, accent, alpha = ThemeSrc()
-	if not T then return end
-	VKB.Panel.BackgroundColor3 = T.WmBg
-	VKB.Stroke.Color = T.WmStroke
-	VKB.GripIcon.ImageColor3 = T.NavGray
-	VKB.Field.BackgroundColor3 = T.DropdownBg
-	VKB.FieldStroke.Color = accent
-	VKB.FieldStroke.Transparency = 1 - alpha
-	VKB.Preview.TextColor3 = T.Text
-	VKB.Caret.BackgroundColor3 = accent
-	VKB.Catcher.BackgroundColor3 = T.DropdownBg
-	VKB.Catcher.TextColor3 = T.Text
-	VKB.Catcher.PlaceholderColor3 = T.TextGray
+	VKB.Panel.BackgroundColor3 = Col("Panel", T.WmBg)
+	VKB.Panel.BackgroundTransparency = math.clamp(tonumber(VKB.Cfg.Transparency) or 0, 0, 0.95)
+	VKB.Stroke.Color = Col("Stroke", T.WmStroke)
+	VKB.GripIcon.ImageColor3 = Col("Grip", T.NavGray)
+	VKB.Field.BackgroundColor3 = Col("Field", T.DropdownBg)
+	VKB.FieldStroke.Color = Col("FieldStroke", accent)
+	VKB.FieldStroke.Transparency = VKB.Cfg.Colors.FieldStroke and 0 or (1 - alpha)
+	VKB.Preview.TextColor3 = Col("Text", T.Text)
+	VKB.Caret.BackgroundColor3 = Col("Caret", accent)
 	for _, k in ipairs(VKB.Keys) do VKB.PaintKey(k) end
 end
 
 function VKB.PaintKey(k)
 	local T, accent, alpha = ThemeSrc()
-	if not T then return end
 	local act = k.spec.act
+	local active = Col("Active", accent)
 	local on = (act == "shift" and VKB.Shift) or (act == "caps" and VKB.Caps) or (act == "select" and VKB.SelectMode)
-	local bg, bgT
+		or (act == "layout" and k.spec.to == VKB.LayoutName)
+	local bg, bgT, fg
 	if k.place == "tool" or k.place == "header" then
-		bg, bgT = T.DropdownBg, k.down and 0 or 0.45
+		bg, bgT = Col("Tool", T.DropdownBg), k.down and 0 or 0.45
+		fg = Col("ToolText", T.TextGray)
+	elseif act == "enter" then
+		bg, bgT = Col("Enter", T.DropdownBg:Lerp(accent, 0.35 * alpha)), 0
+		fg = Col("EnterText", T.Text)
 	elseif act then
-		bg, bgT = T.DropdownBg:Lerp(T.WmBg, 0.55), 0
+		bg, bgT = Col("ActionKey", T.DropdownBg:Lerp(T.WmBg, 0.55)), 0
+		fg = Col("ActionText", T.TextGray)
 	else
-		bg, bgT = T.DropdownBg, 0
+		bg, bgT = Col("Key", T.DropdownBg), 0
+		fg = Col("KeyText", T.Text)
 	end
-	if act == "enter" then bg = T.DropdownBg:Lerp(accent, 0.35 * alpha) end
-	if k.down then bg = T.TileHover:Lerp(T.Text, 0.1) end
+	if k.down then bg = Col("Pressed", T.TileHover:Lerp(T.Text, 0.1)) end
+	if on then fg = active end
 	k.btn.BackgroundColor3 = bg
 	k.btn.BackgroundTransparency = bgT
-	k.stroke.Color = on and accent or T.DropdownBorder
+	k.stroke.Color = on and active or T.DropdownBorder
 	k.stroke.Transparency = on and (1 - alpha) or ((k.place == "tool" or k.place == "header") and 1 or 0.4)
-	local fg = on and accent or ((act and act ~= "enter") and T.TextGray or T.Text)
 	if k.label then k.label.TextColor3 = fg end
 	if k.icon then k.icon.ImageColor3 = fg end
 end
 
 function VKB.Labels()
+	if not VKB.Keys then return end
 	local upper = VKB.Caps ~= VKB.Shift
 	for _, k in ipairs(VKB.Keys) do
 		local s = k.spec
 		if k.label then
-			if not s.act then
+			if not s.act and s.text == nil then
 				if s.letter then
-					k.label.Text = upper and s[2] or s[1]
+					k.label.Text = upper and (s[2] or s[1]) or s[1]
 				else
-					k.label.Text = VKB.Shift and s[2] or s[1]
+					k.label.Text = VKB.Shift and (s[2] or s[1]) or s[1]
 				end
 			elseif s.act == "mode" then
 				k.label.Text = VKB.Compact and "+" or "-"
@@ -2630,20 +2858,20 @@ local function Selection()
 end
 
 function VKB.Render()
-	if not VKB.Target then return end
+	if not VKB.Target or not VKB.Field then return end
 	local T, accent = ThemeSrc()
 	local text, cur = VKB.Text, VKB.Cursor
 	local fw = VKB.Field.AbsoluteSize.X
 	local padX = 8
 	if text == "" then
 		local ph = VKB.Target.PlaceholderText or ""
-		VKB.Preview.Text = ph ~= "" and ('<font color="%s">%s</font>'):format(HexOf(T.TextDim), RichEscape(ph)) or ""
+		VKB.Preview.Text = ph ~= "" and ('<font color="%s">%s</font>'):format(HexOf(Col("Placeholder", T.TextDim)), RichEscape(ph)) or ""
 		VKB.Scroll = 0
 	else
 		local a, b = Selection()
 		if a then
 			VKB.Preview.Text = RichEscape(text:sub(1, a))
-				.. ('<mark color="%s" transparency="0.55">'):format(HexOf(accent))
+				.. ('<mark color="%s" transparency="0.55">'):format(HexOf(Col("Selection", accent)))
 				.. RichEscape(text:sub(a + 1, b)) .. "</mark>" .. RichEscape(text:sub(b + 1))
 		else
 			VKB.Preview.Text = RichEscape(text)
@@ -2688,11 +2916,13 @@ end
 function VKB.SetText(text, cursor, anchor)
 	local box = VKB.Target
 	if not box then return end
+	local before = box.Text
 	box.Text = text
 	VKB.Text = box.Text
 	VKB.Cursor = math.clamp(cursor, 0, #VKB.Text)
 	VKB.Anchor = anchor and math.clamp(anchor, 0, #VKB.Text) or nil
 	VKB.Render()
+	if before ~= VKB.Text then VKB.Fire("Change", VKB.Text, box) end
 end
 
 -- Undo history: consecutive typing / deleting within a second merges into one step.
@@ -2701,7 +2931,8 @@ function VKB.Record(kind)
 	local merge = (kind == "type" or kind == "back") and VKB.LastKind == kind and now - (VKB.LastRec or 0) < 1
 	if not merge then
 		table.insert(VKB.Undo, {VKB.Text, VKB.Cursor, VKB.Anchor})
-		if #VKB.Undo > VKB_UNDO_MAX then table.remove(VKB.Undo, 1) end
+		local limit = math.max(1, math.floor(tonumber(VKB.Cfg.UndoLimit) or 100))
+		while #VKB.Undo > limit do table.remove(VKB.Undo, 1) end
 	end
 	table.clear(VKB.Redo)
 	VKB.LastKind, VKB.LastRec = kind, now
@@ -2717,7 +2948,8 @@ local function Restore(from, to)
 end
 
 function VKB.Insert(str, kind)
-	if str == "" then return end
+	str = tostring(str or "")
+	if str == "" or not VKB.Target then return end
 	local text = VKB.Text
 	local a, b = Selection()
 	if not a then a, b = VKB.Cursor, VKB.Cursor end
@@ -2730,6 +2962,7 @@ function VKB.Insert(str, kind)
 end
 
 function VKB.DeleteBack(word)
+	if not VKB.Target then return end
 	local text = VKB.Text
 	local a, b = Selection()
 	if a then
@@ -2748,6 +2981,7 @@ end
 
 -- dir: -1/1 char, "home"/"end". In select mode the selection grows instead of collapsing.
 function VKB.Move(dir)
+	if not VKB.Target then return end
 	local text, cur = VKB.Text, VKB.Cursor
 	local a, b = Selection()
 	if not VKB.SelectMode and a and (dir == -1 or dir == 1) then
@@ -2764,6 +2998,7 @@ function VKB.Move(dir)
 	VKB.SetText(text, nc, anchor)
 end
 
+-- Clipboard actions are only reachable when "cut"/"copy"/"paste" are placed in Tools or a layout.
 function VKB.Copy(cut)
 	local text = VKB.Text
 	local a, b = Selection()
@@ -2781,41 +3016,38 @@ function VKB.Copy(cut)
 		VKB.Labels()
 	end
 end
-
 function VKB.Paste()
 	local s = ReadClipboard() or VKB.Clip
-	if s then
-		VKB.Insert(OneLine(s), "paste")
-		return
-	end
-	local c = VKB.Catcher
-	c.Text = ""
-	c.Visible = true
-	c:CaptureFocus()
-end
-function VKB.HideCatcher()
-	local c = VKB.Catcher
-	if not c or not c.Visible then return end
-	c.Visible = false
-	if c:IsFocused() then c:ReleaseFocus() end
-	c.Text = ""
+	if s then VKB.Insert(OneLine(s), "paste") end
 end
 
 function VKB.Act(k)
 	local s = k.spec
 	local act = s.act
+	if VKB.Fire("Key", s, Library.Keyboard) == false then return end
+	if type(s.action) == "function" then
+		SafeCall(s.action, Library.Keyboard, s)
+		return
+	end
 	if not act then
 		local ch
-		if s.letter then
-			ch = (VKB.Caps ~= VKB.Shift) and s[2] or s[1]
+		if s.text ~= nil then
+			ch = tostring(s.text)
+		elseif s.letter then
+			ch = (VKB.Caps ~= VKB.Shift) and (s[2] or s[1]) or s[1]
 		else
-			ch = VKB.Shift and s[2] or s[1]
+			ch = VKB.Shift and (s[2] or s[1]) or s[1]
 		end
 		VKB.Insert(ch, "type")
-		if VKB.Shift then
+		if VKB.Shift and VKB.Cfg.ShiftOnce ~= false then
 			VKB.Shift = false
 			VKB.Labels()
 		end
+	elseif act == "custom" then
+		local fn = VKB.Actions[s.id or ""]
+		if fn then SafeCall(fn, Library.Keyboard, s) end
+	elseif act == "layout" then
+		VKB.UseLayout(s.to or "Default")
 	elseif act == "back" then
 		VKB.DeleteBack(false)
 	elseif act == "wordback" then
@@ -2863,7 +3095,12 @@ function VKB.Act(k)
 	elseif act == "mode" then
 		VKB.SetCompact(not VKB.Compact)
 	elseif act == "enter" then
-		VKB.Close(true)
+		if VKB.Fire("Enter", VKB.Target, VKB.Text) == false then return end
+		if VKB.Cfg.CloseOnEnter ~= false then
+			VKB.Close(true)
+		elseif VKB.Opts and VKB.Opts.onEnter then
+			SafeCall(VKB.Opts.onEnter, VKB.Text)
+		end
 	elseif act == "hide" then
 		VKB.Close(false)
 	end
@@ -2871,13 +3108,12 @@ end
 
 -- Tap the field to place the caret, drag across it to select, double-tap to select a word.
 function VKB.FieldDown(input)
-	VKB.HideCatcher()
 	local pos = PointerPos(input)
 	local idx = VKB.IndexAt(pos.X)
 	local now = os.clock()
 	local last = VKB.LastTap
 	VKB.LastTap = {t = now, idx = idx}
-	if last and now - last.t < 0.35 and math.abs(last.idx - idx) <= 2 and VKB.Text ~= "" then
+	if VKB.Cfg.DoubleTapSelect ~= false and last and now - last.t < 0.35 and math.abs(last.idx - idx) <= 2 and VKB.Text ~= "" then
 		local text = VKB.Text
 		local a = WordLeft(text, idx)
 		local b = WordRight(text, a)
@@ -2908,18 +3144,23 @@ function VKB.Press(k, input)
 	end
 	VKB.Act(k)
 	if VKB_REPEAT[k.spec.act] then
+		local C = VKB.Cfg
 		local tok = k.tok
-		task.delay(0.4, function()
+		local delay = math.max(0.05, tonumber(C.RepeatDelay) or 0.4)
+		local rate = math.max(0.01, tonumber(C.RepeatRate) or 0.05)
+		local fastAfter = tonumber(C.FastRepeatAfter) or 20
+		local wordAfter = tonumber(C.WordDeleteAfter) or 15
+		task.delay(delay, function()
 			local n = 0
 			while k.tok == tok and k.down and VKB.Target do
 				n = n + 1
-				if k.spec.act == "back" and n > 15 then
+				if k.spec.act == "back" and wordAfter > 0 and n > wordAfter then
 					-- Long hold on Back speeds up to whole words.
 					VKB.DeleteBack(true)
-					task.wait(0.14)
+					task.wait(rate * 2.8)
 				else
 					VKB.Act(k)
-					task.wait(n > 20 and 0.03 or 0.05)
+					task.wait(n > fastAfter and rate * 0.6 or rate)
 				end
 			end
 		end)
@@ -2933,6 +3174,7 @@ function VKB.Release(k)
 end
 
 function VKB.SpaceMove(k, x)
+	if VKB.Cfg.SwipeCaret == false then return end
 	local step = math.max(6, (VKB.Unit or 20) * 0.5)
 	local dx = x - k.swipeX
 	while math.abs(dx) >= step and VKB.Target do
@@ -2955,7 +3197,7 @@ function VKB.Step()
 				VKB.SpaceMove(k, PointerPos(input).X)
 			else
 				VKB.Held[input] = nil
-				if not k.moved and VKB.Target then VKB.Insert(" ", "space") end
+				if not k.moved and VKB.Target and VKB.Fire("Key", k.spec, Library.Keyboard) ~= false then VKB.Insert(" ", "space") end
 				VKB.Release(k)
 			end
 		elseif not live or not Inside(k.btn, PointerPos(input)) then
@@ -3017,6 +3259,11 @@ function VKB.Show(show)
 	local tok = VKB.ShowTok
 	local root, scaler = VKB.Root, VKB.Scaler
 	StopTweens(scaler)
+	if VKB.Cfg.Animations == false then
+		scaler.Scale = 1
+		root.Visible = show
+		return
+	end
 	if show then
 		root.Visible = true
 		scaler.Scale = VKB_HIDDEN
@@ -3030,18 +3277,20 @@ function VKB.Show(show)
 end
 
 function VKB.Open(box, opts)
-	if VKB.Target == box then return end
+	opts = opts or {}
+	if typeof(box) ~= "Instance" or not box:IsA("TextBox") then return false end
+	if VKB.Target == box then return true end
 	if VKB.Target then VKB.Close(false, true) end
 	VKB.Build()
 	local sg = box:FindFirstAncestorWhichIsA("ScreenGui")
-	if not sg then return end
+	if not sg then return false end
 	if VKB.Gui.Parent ~= sg.Parent then
 		VKB.Purge(sg.Parent)
 		VKB.Gui.Parent = sg.Parent
 	end
 	VKB.Gui.DisplayOrder = sg.DisplayOrder + 50
 	VKB.Target, VKB.Opts = box, opts
-	VKB.Shift, VKB.SelectMode, VKB.Anchor, VKB.Scroll = false, false, nil, 0
+	VKB.Shift, VKB.Caps, VKB.SelectMode, VKB.Anchor, VKB.Scroll = false, VKB.Caps == true, false, nil, 0
 	table.clear(VKB.Undo)
 	table.clear(VKB.Redo)
 	VKB.LastKind, VKB.LastTap = nil, nil
@@ -3049,9 +3298,10 @@ function VKB.Open(box, opts)
 	if box.ClearTextOnFocus then box.Text = "" end
 	VKB.Text = box.Text
 	VKB.Cursor = #VKB.Text
+	if VKB.Cfg.CapitalizeFirst == true and VKB.Text == "" then VKB.Shift = true end
 	VKB.ReleaseAll()
-	VKB.HideCatcher()
 
+	VKB.UseLayout(opts.Layout or VKB.Cfg.Layout or "Default", true)
 	VKB.Layout()
 	VKB.Labels()
 	VKB.Paint()
@@ -3068,6 +3318,8 @@ function VKB.Open(box, opts)
 		-- Solid while typing, then a calm blink.
 		VKB.Caret.Visible = ((os.clock() - (VKB.LastEdit or 0)) % 1.1) < 0.6
 	end)
+	VKB.Fire("Open", box)
+	return true
 end
 
 -- Keyboards left over from an earlier execution of the script would otherwise stay on screen.
@@ -3083,8 +3335,8 @@ function VKB.Destroy()
 	if VKB.Target then VKB.Close(false, true) end
 	if VKB.Tracker then VKB.Tracker:Disconnect() VKB.Tracker = nil end
 	if VKB.Gui then pcall(function() VKB.Gui:Destroy() end) end
-	VKB.Gui, VKB.Root, VKB.Keys, VKB.Shown, VKB.Drag, VKB.FieldDrag = nil, nil, nil, nil, nil, nil
-	VKB.Catcher = nil
+	VKB.Gui, VKB.Root, VKB.Panel, VKB.Keys, VKB.Shown, VKB.Drag, VKB.FieldDrag = nil, nil, nil, nil, nil, nil, nil
+	VKB.HeaderKeys, VKB.ToolKeys, VKB.RowKeys = nil, nil, nil
 	VKB.Held = {}
 end
 
@@ -3092,7 +3344,6 @@ end
 function VKB.Close(enter, switching)
 	local box, opts = VKB.Target, VKB.Opts
 	if not box then return end
-	VKB.HideCatcher()
 	VKB.Target = nil
 	if VKB.Watch then
 		VKB.Watch:Disconnect()
@@ -3101,13 +3352,34 @@ function VKB.Close(enter, switching)
 	VKB.ReleaseAll()
 	if not switching then VKB.Show(false) end
 	if opts and opts.onBlur then SafeCall(opts.onBlur, enter and true or false) end
+	VKB.Fire("Close", box, enter and true or false)
+end
+
+function VKB.RefreshCovers()
+	local on = UseVKeyboard()
+	for cover, native in pairs(VKB.Covers) do
+		if cover.Parent then cover.Visible = on and not native end
+	end
+	if not on and VKB.Target then VKB.Close(false) end
+end
+
+-- The keyboard is held back (Ready = false) while a key prompt is on screen and until the
+-- window has finished building, so nothing can type through it before the menu exists.
+function VKB.SetReady(b)
+	b = b ~= false
+	if VKB.Ready == b then return end
+	VKB.Ready = b
+	VKB.RefreshCovers()
 end
 
 -- Routes a TextBox through the on-screen keyboard when it applies (phones by default).
 -- onFocus()/onBlur(enterPressed) fire for both keyboards. Returns focus() for code that
--- wants to open the box programmatically.
-local function AttachKeyboard(box, themeSrc, onFocus, onBlur)
-	local opts = {theme = themeSrc, onFocus = onFocus, onBlur = onBlur}
+-- wants to open the box programmatically. extra: {Native = true} always uses the device
+-- keyboard; {Layout = "Numeric"} picks the layout the on-screen keyboard opens with.
+local function AttachKeyboard(box, themeSrc, onFocus, onBlur, extra)
+	extra = extra or {}
+	local native = extra.Native == true
+	local opts = {theme = themeSrc, onFocus = onFocus, onBlur = onBlur, onEnter = extra.OnEnter, Layout = extra.Layout}
 	if onFocus then box.Focused:Connect(onFocus) end
 	if onBlur then box.FocusLost:Connect(function(enter) onBlur(enter) end) end
 	local cover = Create("TextButton", {
@@ -3115,16 +3387,17 @@ local function AttachKeyboard(box, themeSrc, onFocus, onBlur)
 		BackgroundTransparency = 1,
 		Text = "",
 		ZIndex = box.ZIndex + 1,
-		Visible = UseVKeyboard(),
+		Visible = not native and UseVKeyboard(),
 		Parent = box,
 	})
-	VKB.Covers[cover] = true
+	VKB.Covers[cover] = native
 	local function Focus()
 		if not box.TextEditable then return end
-		if UseVKeyboard() then
+		if not native and UseVKeyboard() then
 			if box:IsFocused() then box:ReleaseFocus() end
 			VKB.Open(box, opts)
 		else
+			if VKB.Target == box then VKB.Close(false, true) end
 			box:CaptureFocus()
 		end
 	end
@@ -3132,19 +3405,192 @@ local function AttachKeyboard(box, themeSrc, onFocus, onBlur)
 	return Focus
 end
 
+-- Public keyboard API: Library.Keyboard (every method also works with ':').
+local Keyboard = {}
+Library.Keyboard = Keyboard
+
+local function CfgCopy()
+	local out = {}
+	for k, v in pairs(VKB.Cfg) do
+		if type(v) == "table" then
+			local t = {}
+			for a, b in pairs(v) do t[a] = b end
+			out[k] = t
+		else
+			out[k] = v
+		end
+	end
+	return out
+end
+local function Refresh()
+	if not VKB.Root then return end
+	VKB.BuildKeys()
+	VKB.Layout()
+	VKB.Labels()
+	VKB.Paint()
+end
+
+Method(Keyboard, "Configure", function(opts)
+	if type(opts) ~= "table" then return CfgCopy() end
+	for k, v in pairs(opts) do
+		if k == "Colors" then
+			if type(v) == "table" then
+				for name, c in pairs(v) do VKB.Cfg.Colors[name] = c end
+			end
+		elseif k == "Mode" or k == "Enabled" then
+			VKB.Cfg.Mode = NormMode(k == "Enabled" and (v == true and "Auto" or v) or v)
+		elseif k == "Compact" then
+			VKB.SetCompact(v == true)
+		elseif k == "Layout" then
+			VKB.Cfg.Layout = VKB_LAYOUTS[v] and v or "Default"
+			if VKB.Target then VKB.UseLayout(VKB.Cfg.Layout, true) end
+		elseif k == "Scale" then
+			Library.KeyboardScale = nil
+			VKB.Cfg.Scale = tonumber(v) or 1
+		else
+			VKB.Cfg[k] = v
+		end
+	end
+	Refresh()
+	VKB.RefreshCovers()
+	return CfgCopy()
+end)
+Method(Keyboard, "Get", CfgCopy)
+Method(Keyboard, "Reset", function()
+	VKB.Cfg = {Colors = {}}
+	for k, v in pairs(KB_DEFAULTS) do
+		if type(v) == "table" then
+			local t = {}
+			for a, b in pairs(v) do t[a] = b end
+			VKB.Cfg[k] = t
+		else
+			VKB.Cfg[k] = v
+		end
+	end
+	VKB.SetCompact(false)
+	Refresh()
+	VKB.RefreshCovers()
+end)
+Method(Keyboard, "SetMode", function(mode) return Keyboard.Configure({Mode = mode}) end)
+Method(Keyboard, "SetEnabled", function(b) return Keyboard.Configure({Mode = b == false and "Off" or "Auto"}) end)
+Method(Keyboard, "IsEnabled", function() return NormMode(VKB.Cfg.Mode) ~= "Off" end)
+Method(Keyboard, "IsActive", UseVKeyboard)
+Method(Keyboard, "IsSupported", TouchDevice)
+Method(Keyboard, "IsReady", function() return VKB.Ready == true end)
+Method(Keyboard, "SetCompact", function(b) VKB.SetCompact(b == true) end)
+Method(Keyboard, "IsCompact", function() return VKB.Compact == true end)
+Method(Keyboard, "SetScale", function(n) return Keyboard.Configure({Scale = tonumber(n) or 1}) end)
+Method(Keyboard, "SetDock", function(side) return Keyboard.Configure({Dock = side == "Top" and "Top" or "Bottom"}) end)
+Method(Keyboard, "SetTools", function(list) return Keyboard.Configure({Tools = list}) end)
+Method(Keyboard, "SetColors", function(colors) return Keyboard.Configure({Colors = colors}) end)
+Method(Keyboard, "SetPosition", function(x, y)
+	local p = typeof(x) == "Vector2" and x or Vector2.new(tonumber(x) or 0, tonumber(y) or 0)
+	VKB.Cfg.CompactPosition = p
+	VKB.Pos = p
+	if VKB.Root and VKB.Compact then VKB.Place(p.X, p.Y) end
+end)
+Method(Keyboard, "GetSize", function() return VKB.Size end)
+
+Method(Keyboard, "AddLayout", function(name, spec)
+	local lay = NormLayout(spec)
+	if type(name) ~= "string" or not lay then return false end
+	VKB_LAYOUTS[name] = lay
+	if VKB.LayoutName == name then Refresh() end
+	return true
+end)
+Method(Keyboard, "RemoveLayout", function(name)
+	if name == "Default" or not VKB_LAYOUTS[name] then return false end
+	VKB_LAYOUTS[name] = nil
+	if VKB.Cfg.Layout == name then VKB.Cfg.Layout = "Default" end
+	if VKB.LayoutName == name then VKB.UseLayout("Default") end
+	return true
+end)
+Method(Keyboard, "GetLayouts", function()
+	local names = {}
+	for name in pairs(VKB_LAYOUTS) do table.insert(names, name) end
+	table.sort(names)
+	return names
+end)
+Method(Keyboard, "SetLayout", function(name)
+	if not VKB_LAYOUTS[name] then return false end
+	VKB.Cfg.Layout = name
+	if VKB.Target then VKB.UseLayout(name) end
+	return true
+end)
+Method(Keyboard, "GetLayout", function() return VKB.LayoutName or VKB.Cfg.Layout or "Default" end)
+Method(Keyboard, "Keys", VKeys)
+
+Method(Keyboard, "AddAction", function(name, fn)
+	if type(name) ~= "string" or type(fn) ~= "function" then return end
+	VKB.Actions[name] = fn
+end)
+Method(Keyboard, "RemoveAction", function(name) VKB.Actions[name] = nil end)
+Method(Keyboard, "OnOpen", function(fn) return VKB.Hook("Open", fn) end)
+Method(Keyboard, "OnClose", function(fn) return VKB.Hook("Close", fn) end)
+Method(Keyboard, "OnKey", function(fn) return VKB.Hook("Key", fn) end)
+Method(Keyboard, "OnChange", function(fn) return VKB.Hook("Change", fn) end)
+Method(Keyboard, "OnEnter", function(fn) return VKB.Hook("Enter", fn) end)
+Method(Keyboard, "OnLayout", function(fn) return VKB.Hook("Layout", fn) end)
+
+Method(Keyboard, "Open", function(box, opts)
+	if not UseVKeyboard() then return false end
+	return VKB.Open(box, type(opts) == "table" and opts or {}) == true
+end)
+Method(Keyboard, "Close", function() VKB.Close(false) end)
+Method(Keyboard, "Submit", function() VKB.Close(true) end)
+Method(Keyboard, "IsOpen", function() return VKB.Target ~= nil end)
+Method(Keyboard, "GetTarget", function() return VKB.Target end)
+Method(Keyboard, "GetText", function() return VKB.Target and VKB.Text or nil end)
+Method(Keyboard, "SetText", function(text, cursor)
+	if not VKB.Target then return end
+	VKB.Record("set")
+	text = OneLine(text or "")
+	VKB.SetText(text, tonumber(cursor) or #text)
+end)
+Method(Keyboard, "Insert", function(str) VKB.Insert(OneLine(str), "insert") end)
+Method(Keyboard, "Backspace", function(word) VKB.DeleteBack(word == true) end)
+Method(Keyboard, "Clear", function()
+	if VKB.Target and VKB.Text ~= "" then
+		VKB.Record("clear")
+		VKB.SetText("", 0)
+	end
+end)
+Method(Keyboard, "Move", function(dir) VKB.Move(dir) end)
+Method(Keyboard, "SelectAll", function()
+	if not VKB.Target then return end
+	VKB.SelectMode = true
+	VKB.SetText(VKB.Text, #VKB.Text, 0)
+	VKB.Labels()
+end)
+Method(Keyboard, "GetSelection", function()
+	if not VKB.Target then return nil end
+	local a, b = Selection()
+	if not a then return nil end
+	return VKB.Text:sub(a + 1, b), a, b
+end)
+Method(Keyboard, "Undo", function() if VKB.Target then Restore(VKB.Undo, VKB.Redo) end end)
+Method(Keyboard, "Redo", function() if VKB.Target then Restore(VKB.Redo, VKB.Undo) end end)
+Method(Keyboard, "SetShift", function(b) VKB.Shift = b == true; VKB.Labels() end)
+Method(Keyboard, "SetCaps", function(b) VKB.Caps = b == true; VKB.Labels() end)
+Method(Keyboard, "Rebuild", function()
+	local box, opts = VKB.Target, VKB.Opts
+	VKB.Destroy()
+	if box and box.Parent then VKB.Open(box, opts) end
+end)
+Method(Keyboard, "Destroy", VKB.Destroy)
+
+-- Legacy entry points.
 Method(Library, "SetCustomKeyboard", function(mode)
 	Library.CustomKeyboard = mode
-	local on = UseVKeyboard()
-	for cover in pairs(VKB.Covers) do
-		if cover.Parent then cover.Visible = on end
-	end
-	if not on and VKB.Target then VKB.Close(false) end
+	VKB.Cfg.Mode = NormMode(mode)
+	VKB.RefreshCovers()
 end)
 Method(Library, "SetKeyboardCompact", function(b)
 	Library.KeyboardCompact = b == true
 	VKB.SetCompact(b == true)
 end)
 Method(Library, "CloseKeyboard", function() VKB.Close(false) end)
+Method(Library, "ConfigureKeyboard", function(opts) return Keyboard.Configure(opts) end)
 
 local function AddInput(W, S, o)
 	o = Opts(o)
@@ -3227,6 +3673,8 @@ local function AddInput(W, S, o)
 	OnMouseEnter(box, function() inHover = true el._apply(true) end)
 	box.MouseLeave:Connect(function() inHover = false el._apply(true) end)
 
+	-- Keyboard = false keeps the device keyboard; KeyboardLayout picks the on-screen layout
+	-- (numeric inputs default to the number pad).
 	local focusBox = AttachKeyboard(box, W, function()
 		focused = true
 		el._apply(true)
@@ -3234,7 +3682,7 @@ local function AddInput(W, S, o)
 		focused = false
 		el._apply(true)
 		Commit(box.Text)
-	end)
+	end, {Native = o.Keyboard == false, Layout = o.KeyboardLayout or (numeric and "Numeric" or nil)})
 	box:GetPropertyChangedSignal("Text"):Connect(function()
 		if updating then return end
 		if maxLen and #box.Text > maxLen then
@@ -3390,17 +3838,6 @@ local function Pulse(scale, amount)
 		if state == Enum.PlaybackState.Completed then Tween(scale, PULSE_DOWN, {Scale = 1}) end
 	end)
 end
-local function Shake(obj, base)
-	task.spawn(function()
-		for _, dx in ipairs({-5, 5, -4, 4, -2, 2, 0}) do
-			if not obj.Parent then return end
-			Tween(obj, TweenInfo.new(0.035, Enum.EasingStyle.Sine), {Position = base + UDim2.fromOffset(dx, 0)})
-			task.wait(0.035)
-		end
-		if obj.Parent then obj.Position = base end
-	end)
-end
-
 local MODE_TEXT = {Toggle = "toggle", Hold = "hold", Press = "press"}
 local ROW_TI = TweenInfo.new(0.22, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
 -- Same feel as the main window open/close.
@@ -4793,7 +5230,7 @@ local function AddStepper(W, S, o)
 	AttachKeyboard(box, W, function() box.Text = FormatNumber(value, decimals) end, function()
 		local text = box.Text:gsub("[^%d%.%-]", "")
 		SetValue(tonumber(text) or value)
-	end)
+	end, {Native = o.Keyboard == false, Layout = o.KeyboardLayout or "Numeric"})
 
 	Method(el, "Set", function(v, silent) SetValue(v, silent) end)
 	Method(el, "Get", function() return value end)
@@ -6622,36 +7059,179 @@ local function FormatDuration(sec)
 	return ("%ds"):format(s)
 end
 
+local function Trim(s)
+	return (tostring(s or ""):gsub("^%s+", ""):gsub("%s+$", ""))
+end
+
+-- SHA-256, so key lists can ship as hashes instead of plain text and the saved-key file can be signed.
+local Sha256
+do
+	local band, bxor, bnot, rrot, rshift = bit32.band, bit32.bxor, bit32.bnot, bit32.rrotate, bit32.rshift
+	local K = {
+		0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+		0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+		0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+		0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+		0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+		0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+		0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+		0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+	}
+	local MOD = 4294967296
+	function Sha256(msg)
+		msg = tostring(msg)
+		local len = #msg
+		msg = msg .. "\128" .. string.rep("\0", (55 - len) % 64) .. string.pack(">I8", len * 8)
+		local h0, h1, h2, h3 = 0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a
+		local h4, h5, h6, h7 = 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19
+		local w = table.create(64, 0)
+		for chunk = 1, #msg, 64 do
+			for i = 0, 15 do
+				w[i] = string.unpack(">I4", msg, chunk + i * 4)
+			end
+			for i = 16, 63 do
+				local v15, v2 = w[i - 15], w[i - 2]
+				local s0 = bxor(rrot(v15, 7), rrot(v15, 18), rshift(v15, 3))
+				local s1 = bxor(rrot(v2, 17), rrot(v2, 19), rshift(v2, 10))
+				w[i] = (w[i - 16] + s0 + w[i - 7] + s1) % MOD
+			end
+			local a, b, c, d, e, f, g, h = h0, h1, h2, h3, h4, h5, h6, h7
+			for i = 0, 63 do
+				local S1 = bxor(rrot(e, 6), rrot(e, 11), rrot(e, 25))
+				local ch = bxor(band(e, f), band(bnot(e), g))
+				local t1 = (h + S1 + ch + K[i + 1] + w[i]) % MOD
+				local S0 = bxor(rrot(a, 2), rrot(a, 13), rrot(a, 22))
+				local maj = bxor(band(a, b), band(a, c), band(b, c))
+				local t2 = (S0 + maj) % MOD
+				h, g, f, e, d, c, b, a = g, f, e, (d + t1) % MOD, c, b, a, (t1 + t2) % MOD
+			end
+			h0, h1, h2, h3 = (h0 + a) % MOD, (h1 + b) % MOD, (h2 + c) % MOD, (h3 + d) % MOD
+			h4, h5, h6, h7 = (h4 + e) % MOD, (h5 + f) % MOD, (h6 + g) % MOD, (h7 + h) % MOD
+		end
+		return ("%08x%08x%08x%08x%08x%08x%08x%08x"):format(h0, h1, h2, h3, h4, h5, h6, h7)
+	end
+end
+
+-- Key list values: true (never expires), a unix expiry, or a table
+-- {Expires = unix, Duration = seconds from first use, Hwid = "..." | Hwids = {...}, Users = {userId | name},
+--  Note = "...", Disabled = bool}. Array entries may also be {Key = "...", ...}.
+local function NormKeySpec(v)
+	if v == true then return {} end
+	if type(v) == "number" then return {Expires = v} end
+	if type(v) == "table" then
+		local hw = v.Hwids or v.Hwid or v.hwid
+		if type(hw) == "string" then hw = {hw} end
+		local users = v.Users or v.UserIds or v.User or v.UserId
+		if users ~= nil and type(users) ~= "table" then users = {users} end
+		return {
+			Expires = v.Expires or v.expires,
+			Duration = tonumber(v.Duration or v.duration),
+			Note = v.Note or v.note,
+			Disabled = v.Disabled == true or v.disabled == true,
+			Hwids = type(hw) == "table" and hw or nil,
+			Users = type(users) == "table" and users or nil,
+		}
+	end
+	return nil
+end
+
 -- Verification + saved-key storage, shared by the first prompt and later re-checks.
 local function KeyBackend(ks, ctx)
 	local B = {}
-	local staticKeys = {}
+	local caseSensitive = ks.CaseSensitive ~= false
+
+	local function Norm(key)
+		key = Trim(key)
+		if ks.StripSpaces == true then key = key:gsub("%s+", "") end
+		if not caseSensitive then key = key:lower() end
+		if type(ks.Normalize) == "function" then
+			local ok, r = pcall(ks.Normalize, key)
+			if ok and type(r) == "string" then key = r end
+		end
+		return key
+	end
+	B.Normalize = Norm
+
+	local staticKeys, hashes = {}, {}
 	local keyList = ks.Keys or ks.Key
 	if type(keyList) == "string" then keyList = {keyList} end
-	-- Keys = {"a", "b"} never expire; Keys = {["a"] = unixExpiry} expire at that time.
 	for k, v in pairs(type(keyList) == "table" and keyList or {}) do
 		if type(k) == "number" then
-			staticKeys[tostring(v)] = true
+			if type(v) == "table" then
+				if v.Key ~= nil then staticKeys[Norm(v.Key)] = NormKeySpec(v) end
+			else
+				staticKeys[Norm(v)] = {}
+			end
 		else
-			staticKeys[tostring(k)] = v
+			local spec = NormKeySpec(v)
+			if spec then staticKeys[Norm(k)] = spec end
 		end
 	end
+	local hashList = ks.Hashes or ks.Hash
+	if type(hashList) == "string" then hashList = {hashList} end
+	for k, v in pairs(type(hashList) == "table" and hashList or {}) do
+		if type(k) == "number" then
+			hashes[Trim(v):lower()] = {}
+		else
+			local spec = NormKeySpec(v)
+			if spec then hashes[Trim(k):lower()] = spec end
+		end
+	end
+
 	local hwid = GetHwid()
 	B.Hwid = hwid
+	local userId = LocalPlayer and LocalPlayer.UserId or 0
+	local userName = LocalPlayer and LocalPlayer.Name or ""
 	local hasRemote = (type(ks.Url) == "string" and ks.Url ~= "") or type(ks.Verify) == "function"
 
-	-- Returns valid, message, expires, definitive (false when the server simply couldn't be reached).
+	-- Lists may mix user ids, usernames and HWIDs.
+	local function InList(list)
+		if type(list) ~= "table" then return false end
+		for _, v in ipairs(list) do
+			local s = tostring(v)
+			if s == tostring(userId) or s == userName or s == hwid then return true end
+		end
+		return false
+	end
+	function B.Whitelisted() return InList(ks.Whitelist) end
+	function B.Blacklisted() return InList(ks.Blacklist) end
+
+	local function CheckSpec(spec, source)
+		if spec.Disabled then return false, ks.DisabledMessage or "This key has been disabled", nil, true end
+		if spec.Hwids and #spec.Hwids > 0 then
+			local okHw = false
+			for _, h in ipairs(spec.Hwids) do
+				if tostring(h) == hwid then okHw = true break end
+			end
+			if not okHw then return false, ks.HwidMessage or "This key is locked to another device", nil, true end
+		end
+		if spec.Users and #spec.Users > 0 and not InList(spec.Users) then
+			return false, ks.UserMessage or "This key belongs to another account", nil, true
+		end
+		return true, nil, ParseExpiry(spec.Expires), true, {Source = source, Note = spec.Note, Duration = spec.Duration}
+	end
+
+	-- Returns valid, message, expires, definitive (false when the server simply couldn't be reached), meta.
 	local function Check(key)
+		if B.Whitelisted() then return true, nil, nil, true, {Source = "whitelist"} end
+		if B.Blacklisted() then return false, ks.BlacklistMessage or "You are not allowed to use this", nil, true end
 		if key == "" then return false, "Enter a key", nil, true end
+		local minLen, maxLen = tonumber(ks.MinLength), tonumber(ks.MaxLength)
+		if (minLen and #key < minLen) or (maxLen and #key > maxLen)
+			or (type(ks.Pattern) == "string" and not key:match(ks.Pattern)) then
+			return false, ks.FormatMessage or "Invalid key format", nil, true
+		end
 		local st = staticKeys[key]
-		if st ~= nil and st ~= false then
-			if st == true then return true end
-			return true, nil, ParseExpiry(st)
+		if st then return CheckSpec(st, "static") end
+		if next(hashes) then
+			local hs = hashes[Sha256(key)]
+			if hs then return CheckSpec(hs, "hash") end
 		end
 		local lastMsg, reached = nil, not hasRemote
 		if type(ks.Url) == "string" and ks.Url ~= "" then
 			local url = ks.Url:gsub("{key}", function() return HttpService:UrlEncode(key) end)
 				:gsub("{hwid}", function() return HttpService:UrlEncode(hwid) end)
+				:gsub("{userid}", function() return tostring(userId) end)
 			local body, code = HttpGetBody(url)
 			if body then
 				reached = true
@@ -6663,11 +7243,11 @@ local function KeyBackend(ks, ctx)
 				end
 				if ok == true then
 					if type(msg) == "number" then exp = msg end
-					return true, nil, ParseExpiry(exp)
+					return true, nil, ParseExpiry(exp), true, {Source = "remote"}
 				end
 				lastMsg = type(msg) == "string" and msg or nil
 			else
-				lastMsg = "Could not reach key server"
+				lastMsg = ks.OfflineMessage or "Could not reach key server"
 			end
 		end
 		if type(ks.Verify) == "function" then
@@ -6677,29 +7257,36 @@ local function KeyBackend(ks, ctx)
 				local exp = b
 				if type(a) == "number" then exp = a end
 				if type(a) == "table" then exp = a.Expires or a.expires end
-				return true, nil, ParseExpiry(exp)
+				return true, nil, ParseExpiry(exp), true, {Source = "verify", Note = type(a) == "table" and (a.Note or a.note) or nil}
 			end
 			if type(a) == "string" then lastMsg = a end
 		end
-		return false, lastMsg or "Invalid key", nil, reached
+		return false, lastMsg or ks.InvalidMessage or "Invalid key", nil, reached
 	end
 
 	function B.Check(key, activated)
-		local ok, valid, msg, exp, definitive = pcall(Check, tostring(key or ""))
+		local ok, valid, msg, exp, definitive, meta = pcall(Check, Norm(key))
 		if not ok then return false, "Verification error", nil, false end
 		if not valid then return false, msg, nil, definitive end
-		local dur = tonumber(ks.Duration)
+		meta = meta or {}
+		local dur = tonumber(meta.Duration) or tonumber(ks.Duration)
 		if dur and dur > 0 then
-			local local_exp = math.floor((tonumber(activated) or Now()) + dur)
-			exp = exp and math.min(exp, local_exp) or local_exp
+			local localExp = math.floor((tonumber(activated) or Now()) + dur)
+			exp = exp and math.min(exp, localExp) or localExp
 		end
-		if exp and exp <= Now() then return false, "Key expired", nil, true end
-		return true, nil, exp, true
+		if exp and exp <= Now() then return false, "Key expired", nil, true, meta end
+		return true, nil, exp, true, meta
 	end
 
+	-- Saved key file: key, activation time and a signature over both (plus the HWID unless
+	-- BindHwid = false), so the activation time can't be edited and the file can't be copied
+	-- to another device.
 	local folder = ks.Folder or ctx.Folder
 	local fileName = ks.FileName or ((ctx.GuiName or Library.GuiName) .. "_key.txt")
 	local savePath = (folder and folder ~= "") and (folder .. "/" .. fileName) or fileName
+	local function Sig(key, activated)
+		return Sha256(table.concat({tostring(key), tostring(activated), ks.BindHwid ~= false and hwid or "", tostring(ks.Salt or "zenin-key")}, "\n"))
+	end
 	function B.Save(key, activated)
 		if ks.SaveKey == false or not writefile then return end
 		if folder and folder ~= "" and isfolder and makefolder then
@@ -6710,7 +7297,9 @@ local function KeyBackend(ks, ctx)
 				if not (ok and exists) then pcall(makefolder, cur) end
 			end
 		end
-		pcall(writefile, savePath, tostring(key) .. "\n" .. tostring(math.floor(tonumber(activated) or Now())))
+		activated = math.floor(tonumber(activated) or Now())
+		key = Norm(key)
+		pcall(writefile, savePath, key .. "\n" .. tostring(activated) .. "\n" .. Sig(key, activated))
 	end
 	function B.Load()
 		if ks.SaveKey == false or not (isfile and readfile) then return nil end
@@ -6718,9 +7307,17 @@ local function KeyBackend(ks, ctx)
 		if not (ok and exists) then return nil end
 		local ok2, data = pcall(readfile, savePath)
 		if not (ok2 and type(data) == "string") then return nil end
-		local key, activated = data:match("^([^\n]*)\n?(%d*)")
-		if not key or key == "" then return nil end
-		return key, tonumber(activated)
+		local key, activated, sig = data:match("^([^\n]*)\n(%d+)\n(%x+)")
+		if not key or key == "" or not activated then
+			B.Forget()
+			return nil
+		end
+		activated = math.floor(tonumber(activated))
+		if sig:lower() ~= Sig(key, activated) then
+			B.Forget()
+			return nil
+		end
+		return key, activated
 	end
 	function B.Forget()
 		if delfile then pcall(delfile, savePath) end
@@ -6728,12 +7325,36 @@ local function KeyBackend(ks, ctx)
 	return B
 end
 
+local KEY_TEXTS = {
+	Title = "Zenin", Subtitle = "Key System", Note = "Enter your key to continue.", Placeholder = "Paste your key here",
+	Verify = "Verify", GetKey = "Get Key", Checking = "Checking...", Verifying = "Verifying...",
+	CheckingSaved = "Checking saved key...", Accepted = "Key accepted", AcceptedExpires = "Key accepted · expires in %s",
+	TooMany = "Too many attempts. Wait %ds", SavedExpired = "Saved key expired. Enter a new key",
+	SavedInvalid = "Saved key is no longer valid", SavedUnverified = "Could not verify saved key",
+	LinkCopied = "Key link copied to clipboard",
+}
+
 -- Blocks the calling thread until a key passes verification.
--- Returns true, {Key, Expires, Activated}, or false if the user closes it.
+-- Returns true, {Key, Expires, Activated, Source, Note, Hwid}, or false if the user closes it.
 local function RunKeySystem(ks, ctx)
 	if type(ks) ~= "table" then ks = {} end
 	if ks.Enabled == false then return true, {} end
 	ctx = ctx or {}
+	local texts = type(ks.Texts) == "table" and ks.Texts or {}
+	local function Txt(name, legacy)
+		local v = texts[name]
+		if v == nil then v = legacy end
+		if v == nil then v = KEY_TEXTS[name] end
+		return tostring(v)
+	end
+
+	local B = ctx.Backend or KeyBackend(ks, ctx)
+	if B.Whitelisted() then
+		local info = {Key = "whitelist", Activated = Now(), Source = "whitelist", Hwid = B.Hwid}
+		SafeCall(ks.OnSuccess or ks.Callback, info.Key, info)
+		return true, info
+	end
+
 	local theme = Library.Themes[ctx.Theme or ""] or Library.Themes.Dark
 	local K = {
 		Theme = theme,
@@ -6742,7 +7363,9 @@ local function RunKeySystem(ks, ctx)
 	}
 	function K.Bind(fn) fn(K.Theme, K.Accent, K.AccentAlpha) end
 
-	local B = ctx.Backend or KeyBackend(ks, ctx)
+	-- The on-screen keyboard stays off until the window exists; the prompt uses the device keyboard.
+	local keyboardWasReady = VKB.Ready
+	VKB.SetReady(false)
 
 	local parent = ctx.Parent
 	if not parent then
@@ -6762,7 +7385,8 @@ local function RunKeySystem(ks, ctx)
 	})
 	if ctx.OnGui then SafeCall(ctx.OnGui, gui) end
 
-	local T, KW, KH = theme, 300, 186
+	local T = theme
+	local KW, KH = math.max(220, tonumber(ks.Width) or 300), math.max(150, tonumber(ks.Height) or 186)
 	local holder = Create("Frame", {
 		Size = UDim2.fromOffset(KW, KH),
 		AnchorPoint = Vector2.new(0.5, 0.5),
@@ -6795,12 +7419,12 @@ local function RunKeySystem(ks, ctx)
 		Padding = UDim.new(0, 5),
 		Parent = brand,
 	})
-	local title = ks.Title or ctx.Title or "Zenin"
+	local title = Txt("Title", ks.Title or ctx.Title)
 	local logo = CreateLogo(K, brand, NormalizeLogo(ks.Logo or ctx.Logo, title), 12, 15)
 	logo.LayoutOrder = 1
 	local titleLbl = Label(brand, title, {AutoX = true, Size = UDim2.new(0, 0, 1, 0), Weight = "SemiBold", Color = T.Text})
 	titleLbl.LayoutOrder = 2
-	local sub = Label(header, ks.Subtitle or "Key System", {
+	local sub = Label(header, Txt("Subtitle", ks.Subtitle), {
 		Position = UDim2.new(0, 0, 0, 0), Size = UDim2.new(1, -40, 1, 0),
 		Align = Enum.TextXAlignment.Right, TextSize = 10, Color = T.TextDim,
 	})
@@ -6821,7 +7445,7 @@ local function RunKeySystem(ks, ctx)
 	if ks.CanClose == false then sub.Size = UDim2.new(1, -12, 1, 0) end
 
 	local body = Create("Frame", {Size = UDim2.new(1, -24, 1, -HEADER_H - 12), Position = UDim2.fromOffset(12, HEADER_H + 10), BackgroundTransparency = 1, Parent = main})
-	local note = Label(body, ks.Note or ks.Description or "Enter your key to continue.", {Size = UDim2.new(1, 0, 0, 14), Color = T.TextGray, Truncate = true})
+	Label(body, Txt("Note", ks.Note or ks.Description), {Size = UDim2.new(1, 0, 0, 14), Color = T.TextGray, Truncate = true})
 
 	local boxFrame = Create("Frame", {Size = UDim2.new(1, 0, 0, 27), Position = UDim2.fromOffset(0, 22), BackgroundColor3 = T.DropdownBg, BorderSizePixel = 0, Parent = body})
 	Corner(boxFrame, 3)
@@ -6832,7 +7456,7 @@ local function RunKeySystem(ks, ctx)
 		Position = UDim2.fromOffset(28, 0),
 		BackgroundTransparency = 1,
 		Text = "",
-		PlaceholderText = ks.Placeholder or "Paste your key here",
+		PlaceholderText = Txt("Placeholder", ks.Placeholder),
 		PlaceholderColor3 = T.TextDim,
 		TextColor3 = T.Text,
 		ClearTextOnFocus = false,
@@ -6844,18 +7468,21 @@ local function RunKeySystem(ks, ctx)
 		Parent = boxFrame,
 	})
 	local onKeyEnter
+	local boxFocused = false
 	AttachKeyboard(box, K, function()
+		boxFocused = true
 		Anim(boxStroke, {Color = K.Accent, Transparency = 1 - K.AccentAlpha}, true)
 	end, function(enter)
+		boxFocused = false
 		Anim(boxStroke, {Color = T.DropdownBorder, Transparency = 0}, true)
 		if enter and onKeyEnter then onKeyEnter() end
-	end)
+	end, {Native = true})
 
 	local link = ks.GetKeyLink or ks.Link or ks.KeyLink
 	local btnRow = Create("Frame", {Size = UDim2.new(1, 0, 0, 27), Position = UDim2.fromOffset(0, 57), BackgroundTransparency = 1, Parent = body})
 	local function KeyButton(text, icon, primary, x, w)
 		local b = Create("TextButton", {
-			Size = UDim2.new(w, x == 0 and -3 or -3, 1, 0),
+			Size = UDim2.new(w, -3, 1, 0),
 			Position = UDim2.new(x, x == 0 and 0 or 3, 0, 0),
 			BorderSizePixel = 0,
 			Text = "",
@@ -6897,27 +7524,36 @@ local function RunKeySystem(ks, ctx)
 			Anim(ic, {ImageColor3 = (primary and not disabled) and K.Accent or fg}, animate)
 		end
 		Paint(false)
-		OnMouseEnter(b, function() hover = true Paint(true) end)
-		b.MouseLeave:Connect(function() hover = false pressed = false Paint(true) end)
-		b.InputBegan:Connect(function(i) if IsClickOrTouch(i) then pressed = true Paint(true) end end)
-		b.InputEnded:Connect(function(i) if IsClickOrTouch(i) then pressed = false Paint(true) end end)
-		return b, lb, function(d) disabled = d Paint(true) end
+		OnMouseEnter(b, function() hover = true; Paint(true) end)
+		b.MouseLeave:Connect(function() hover = false; pressed = false; Paint(true) end)
+		b.InputBegan:Connect(function(i) if IsClickOrTouch(i) then pressed = true; Paint(true) end end)
+		b.InputEnded:Connect(function(i) if IsClickOrTouch(i) then pressed = false; Paint(true) end end)
+		return b, lb, function(d) disabled = d; Paint(true) end
 	end
+	local verifyText = Txt("Verify", ks.VerifyText)
 	local verifyBtn, verifyLbl, setVerifyDisabled
 	local getBtn
 	if link then
-		getBtn = KeyButton(ks.GetKeyText or "Get Key", {"link", "external-link"}, false, 0, 0.5)
-		verifyBtn, verifyLbl, setVerifyDisabled = KeyButton(ks.VerifyText or "Verify", {"shield-check", "check"}, true, 0.5, 0.5)
+		getBtn = KeyButton(Txt("GetKey", ks.GetKeyText), {"link", "external-link"}, false, 0, 0.5)
+		verifyBtn, verifyLbl, setVerifyDisabled = KeyButton(verifyText, {"shield-check", "check"}, true, 0.5, 0.5)
 	else
-		verifyBtn, verifyLbl, setVerifyDisabled = KeyButton(ks.VerifyText or "Verify", {"shield-check", "check"}, true, 0, 1)
+		verifyBtn, verifyLbl, setVerifyDisabled = KeyButton(verifyText, {"shield-check", "check"}, true, 0, 1)
 		verifyBtn.Size = UDim2.fromScale(1, 1)
 	end
 
 	local status = Label(body, "", {Size = UDim2.new(1, 0, 0, 14), Position = UDim2.fromOffset(0, 92), TextSize = 10, Color = T.TextDim, Truncate = true})
-	local ERR, OK = rgb(235, 87, 87), rgb(88, 200, 120)
+	local ERR, OK = ToColor(ks.ErrorColor) or rgb(235, 87, 87), ToColor(ks.SuccessColor) or rgb(88, 200, 120)
 	local function Status(text, kind)
 		status.Text = tostring(text or "")
 		status.TextColor3 = kind == "error" and ERR or (kind == "ok" and OK or T.TextDim)
+	end
+	-- Wrong key: the field border flashes red and settles back; no movement.
+	local function FlashError()
+		if ks.ErrorFlash == false then return end
+		StopTweens(boxStroke)
+		boxStroke.Color, boxStroke.Transparency = ERR, 0
+		local target = boxFocused and K.Accent or T.DropdownBorder
+		Tween(boxStroke, TweenInfo.new(0.7, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {Color = target, Transparency = boxFocused and (1 - K.AccentAlpha) or 0})
 	end
 
 	local thread = coroutine.running()
@@ -6929,6 +7565,7 @@ local function RunKeySystem(ks, ctx)
 	local function Finish(result, info)
 		if finished then return end
 		finished = true
+		VKB.SetReady(keyboardWasReady)
 		Tween(holder, TweenInfo.new(0.2, Enum.EasingStyle.Quad), {Position = UDim2.new(0.5, 0, 0.5, 12)})
 		task.delay(0.12, function() gui:Destroy() end)
 		if result then SafeCall(ks.OnSuccess or ks.Callback, info.Key, info) else SafeCall(ks.OnClose) end
@@ -6937,46 +7574,50 @@ local function RunKeySystem(ks, ctx)
 
 	local function Attempt(key, fromSave, activated)
 		if busy or finished then return end
-		key = tostring(key or ""):gsub("^%s+", ""):gsub("%s+$", "")
+		key = Trim(key)
 		local now = os.clock()
 		if now < lockedUntil then
-			Status(("Too many attempts. Wait %ds"):format(math.ceil(lockedUntil - now)), "error")
+			Status(Txt("TooMany"):format(math.ceil(lockedUntil - now)), "error")
 			return
 		end
+		if not fromSave and SafeCall(ks.OnAttempt, key) == false then return end
 		busy = true
 		setVerifyDisabled(true)
-		verifyLbl.Text = "Checking..."
-		Status(fromSave and "Checking saved key..." or "Verifying...")
+		verifyLbl.Text = Txt("Checking")
+		Status(fromSave and Txt("CheckingSaved") or Txt("Verifying"))
 		activated = math.floor(tonumber(activated) or Now())
 		task.spawn(function()
-			local valid, msg, exp, definitive = B.Check(key, activated)
+			local valid, msg, exp, definitive, meta = B.Check(key, activated)
 			busy = false
 			if finished or not gui.Parent then return end
 			setVerifyDisabled(false)
-			verifyLbl.Text = ks.VerifyText or "Verify"
+			verifyLbl.Text = verifyText
 			if valid then
-				Status(exp and ("Key accepted · expires in " .. FormatDuration(exp - Now())) or "Key accepted", "ok")
+				Status(exp and Txt("AcceptedExpires"):format(FormatDuration(exp - Now())) or Txt("Accepted"), "ok")
 				B.Save(key, activated)
-				task.delay(0.35, function() Finish(true, {Key = key, Expires = exp, Activated = activated}) end)
+				local info = {Key = B.Normalize(key), Expires = exp, Activated = activated, Hwid = B.Hwid,
+					Source = meta and meta.Source or "static", Note = meta and meta.Note or nil}
+				task.delay(0.35, function() Finish(true, info) end)
 				return
 			end
 			if fromSave then
 				if definitive then
 					B.Forget()
 					box.Text = ""
-					Status(msg == "Key expired" and "Saved key expired. Enter a new key" or "Saved key is no longer valid", "error")
+					Status(msg == "Key expired" and Txt("SavedExpired") or Txt("SavedInvalid"), "error")
 				else
-					Status(msg or "Could not verify saved key", "error")
+					Status(msg or Txt("SavedUnverified"), "error")
 				end
 				return
 			end
 			attempts = attempts + 1
-			Shake(holder, UDim2.fromScale(0.5, 0.5))
-			SafeCall(ks.OnFail, key, msg)
+			FlashError()
+			SafeCall(ks.OnFail, key, msg, attempts)
 			if maxAttempts and attempts >= maxAttempts then
 				attempts = 0
 				lockedUntil = os.clock() + lockTime
-				Status(("Too many attempts. Wait %ds"):format(math.ceil(lockTime)), "error")
+				Status(Txt("TooMany"):format(math.ceil(lockTime)), "error")
+				SafeCall(ks.OnLocked, lockTime)
 			else
 				Status(msg or "Invalid key", "error")
 			end
@@ -6992,7 +7633,7 @@ local function RunKeySystem(ks, ctx)
 		getBtn.MouseButton1Click:Connect(function()
 			local clip = setclipboard or toclipboard or (Clipboard and Clipboard.set)
 			if clip and pcall(clip, tostring(link)) then
-				Status("Key link copied to clipboard", "ok")
+				Status(Txt("LinkCopied"), "ok")
 			else
 				Status(tostring(link))
 			end
@@ -7009,6 +7650,10 @@ local function RunKeySystem(ks, ctx)
 	if saved then
 		box.Text = saved
 		Attempt(saved, true, savedAt)
+	elseif ks.AutoFocus ~= false and not TouchDevice() then
+		task.defer(function()
+			if not finished and gui.Parent then pcall(function() box:CaptureFocus() end) end
+		end)
 	end
 	return coroutine.yield()
 end
@@ -7024,6 +7669,9 @@ local function CreateWindow(o)
 		pcall(prev)
 	end
 	if o.CustomKeyboard ~= nil then Library.SetCustomKeyboard(o.CustomKeyboard) end
+	if type(o.Keyboard) == "table" then Library.Keyboard.Configure(o.Keyboard) end
+	-- Held back until the window is fully built; the key prompt never gets the on-screen keyboard.
+	VKB.SetReady(false)
 	if o.Name and not o.Title then o.Title = o.Name end
 	-- Runs before any window or API exists, so nothing below is reachable until a key passes.
 	local keyCfg, keyCtx, keyInfo
@@ -7543,19 +8191,25 @@ local function CreateWindow(o)
 	table.insert(ThemeHooks, W.ThemeHook)
 	if o.Configs then Window.EnableConfigs(type(o.Configs) == "table" and o.Configs or nil) end
 
-	local KS = keyInfo and keyInfo.Key and {Key = keyInfo.Key, Expires = keyInfo.Expires, Activated = keyInfo.Activated, Valid = true}
-	local expireHooks = {}
+	local KS = keyInfo and keyInfo.Key and {
+		Key = keyInfo.Key, Expires = keyInfo.Expires, Activated = keyInfo.Activated, Valid = true,
+		Source = keyInfo.Source, Note = keyInfo.Note, Hwid = keyInfo.Hwid,
+	}
+	local expireHooks, acceptHooks = {}, {}
 	Method(Window, "IsKeyValid", function() return KS == nil or KS.Valid end)
 	Method(Window, "GetKeyInfo", function()
 		if not KS then return nil end
 		return {
-			Key = KS.Key, Valid = KS.Valid, Expires = KS.Expires,
+			Key = KS.Key, Valid = KS.Valid, Expires = KS.Expires, Activated = KS.Activated,
 			Remaining = KS.Expires and math.max(0, KS.Expires - Now()) or nil,
+			Source = KS.Source, Note = KS.Note, Hwid = KS.Hwid,
 		}
 	end)
 	Method(Window, "OnKeyExpired", function(fn) table.insert(expireHooks, fn) end)
+	Method(Window, "OnKeyAccepted", function(fn) table.insert(acceptHooks, fn) end)
 	Method(Window, "CheckKey", function() end)
 	Method(Window, "ExpireKey", function() end)
+	Method(Window, "ForgetKey", function() if keyCtx and keyCtx.Backend then keyCtx.Backend.Forget() end end)
 	if KS then
 		local backend = keyCtx.Backend
 		local interval = keyCfg.CheckInterval
@@ -7578,6 +8232,7 @@ local function CreateWindow(o)
 			SafeCall(keyCfg.OnExpire, reason)
 			for _, fn in ipairs(expireHooks) do SafeCall(fn, reason) end
 			W.Maid:Spawn(function()
+				VKB.SetReady(false)
 				local ctx2 = setmetatable({
 					Reason = reason,
 					SkipSaved = true,
@@ -7592,12 +8247,15 @@ local function CreateWindow(o)
 					return
 				end
 				KS.Key, KS.Expires, KS.Activated, KS.Valid = info.Key, info.Expires, info.Activated, true
+				KS.Source, KS.Note = info.Source, info.Note
 				table.clear(warned)
 				lastCheck = os.clock()
 				W.KeyLocked = false
 				W.WM.ApplyLock()
 				if W.KBList then W.KBList.Refresh() end
 				W.SetShown(true)
+				VKB.SetReady(true)
+				for _, fn in ipairs(acceptHooks) do SafeCall(fn, Window.GetKeyInfo()) end
 				Window.Notify({Title = "Key", Content = "Key accepted", Icon = {"key-round", "key"}})
 			end)
 		end
@@ -7682,12 +8340,16 @@ local function CreateWindow(o)
 	Library.ActiveWindow = Window
 	table.insert(Library.Windows, Window)
 	LiveWindows[guiKey] = Window.Destroy
+	VKB.SetReady(true)
 	return Window
 end
 
 Method(Library, "CreateWindow", CreateWindow)
-Method(Library, "KeySystem", function(ks) return RunKeySystem(ks, {}) end)
+Method(Library, "KeySystem", function(ks, ctx) return RunKeySystem(ks, type(ctx) == "table" and ctx or {}) end)
 Library.FormatDuration = FormatDuration
+Library.Sha256 = Sha256
+Library.HashKey = Sha256
+Library.GetHwid = GetHwid
 Library.Window = Library.CreateWindow
 Library.new = Library.CreateWindow
 Method(Library, "Notify", function(o)
