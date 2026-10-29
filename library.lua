@@ -3830,13 +3830,12 @@ local function BindPress(W, obj, onDown, onUp, maid)
 	end, maid)
 end
 
-local PULSE_UP = TweenInfo.new(0.07, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
-local PULSE_DOWN = TweenInfo.new(0.22, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
-local function Pulse(scale, amount)
-	local t = Tween(scale, PULSE_UP, {Scale = amount or 1.12})
-	t.Completed:Connect(function(state)
-		if state == Enum.PlaybackState.Completed then Tween(scale, PULSE_DOWN, {Scale = 1}) end
-	end)
+-- Click feedback for icon buttons: a short dip in opacity that eases back. No scaling or overshoot.
+local SOFT_TI = TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+local function SoftPress(img)
+	StopTweens(img)
+	img.ImageTransparency = 0.45
+	Tween(img, SOFT_TI, {ImageTransparency = 0})
 end
 local MODE_TEXT = {Toggle = "toggle", Hold = "hold", Press = "press"}
 local ROW_TI = TweenInfo.new(0.22, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
@@ -4237,7 +4236,7 @@ local function AddKeybind(W, S, o)
 			Size = hot and UDim2.fromOffset(6, 6) or UDim2.fromOffset(0, 0),
 			BackgroundColor3 = W.Accent,
 			BackgroundTransparency = 1 - alpha,
-		}, animate, PULSE_DOWN)
+		}, animate, MOVE_TI)
 		Anim(lbl, {
 			Position = UDim2.fromOffset(hot and 11 or 0, 0),
 			TextColor3 = not enabled and T.TextDim or ((hot or hover) and T.Text or T.TextGray),
@@ -5173,7 +5172,6 @@ local function AddStepper(W, S, o)
 		Anim(plusIc, {ImageColor3 = not canUp and T.TextDim or (hoverPlus and T.Text or T.TextGray)}, animate)
 		for _, s in ipairs(seps) do s.BackgroundColor3 = T.DropdownBorder end
 	end
-	local valScale = Create("UIScale", {Parent = box})
 	W.Bind(function() el._apply() end, row)
 
 	local function Show() box.Text = FormatNumber(value, decimals) .. (o.Suffix or "") end
@@ -5185,9 +5183,8 @@ local function AddStepper(W, S, o)
 		el.Value = v
 		Show()
 		if changed and row.Parent then
-			-- brief accent flash + pop on the number
+			-- brief accent tint on the number, eased back by el._apply
 			SetProps(box, {TextColor3 = W.Accent})
-			Pulse(valScale, 1.15)
 		end
 		el._apply(true)
 		if changed and not silent then el._fire(v) else el._sync(v) end
@@ -6926,7 +6923,7 @@ local function BuildConfigs(W, Window)
 		OnMouseEnter(b, function() hover = true Paint(true) end)
 		b.MouseLeave:Connect(function() hover = false Paint(true) end)
 		b.MouseButton1Click:Connect(function()
-			Pulse(icScale, 1.25)
+			SoftPress(ic)
 			onClick()
 		end)
 		return b
@@ -8088,7 +8085,7 @@ local function CreateWindow(o)
 			Anim(hs, {Scale = 1}, true, MOVE_TI)
 		end)
 		b.MouseButton1Click:Connect(function()
-			Pulse(hs, 1.25)
+			SoftPress(ic)
 			SafeCall(bo.Callback)
 		end)
 		table.insert(W.HeaderButtons, b)
