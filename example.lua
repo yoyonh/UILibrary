@@ -10,9 +10,24 @@ local Window = Library:CreateWindow({
 	ConfigFolder = "ZeninDemo",
 	Animation = true, -- open/close fade + scale animation (set false to disable)
 	-- On-screen keyboard on phones/tablets (PC always keeps the normal keyboard). false = off.
+	-- It stays inactive while the key prompt is on screen and switches on once the menu is built.
 	-- Opens full-width; its minimise button turns it into a small draggable panel.
-	-- Library:SetKeyboardCompact(true) starts it small.
 	CustomKeyboard = true,
+	-- Optional fine-tuning (same table as Library.Keyboard:Configure{}); everything scales from
+	-- one row height, so the proportions hold on every screen size and in compact mode.
+	Keyboard = {
+		-- Mode = "Auto",        -- "Auto" (touch-only devices) | "Always" (also PC) | "Off"
+		-- Compact = false,      -- start as the small draggable panel
+		-- Scale = 1,            -- size multiplier
+		-- Dock = "Bottom",      -- or "Top"
+		-- Width = 1,            -- docked width as a fraction of the screen
+		-- Height = 0.56,        -- docked height as a fraction of the screen (capped by KeyAspect)
+		-- Layout = "Default",   -- "Default" | "Simple" | "Numeric" | your own (Library.Keyboard:AddLayout)
+		-- Tools = {"undo", "redo", "select", "all", "home", "end"}, -- toolbar; false hides it
+		-- Padding = 0.15, Gap = 0.1, KeyRadius = 0.18, TextScale = 1,
+		-- RepeatDelay = 0.4, RepeatRate = 0.05, CloseOnEnter = true, CapitalizeFirst = false,
+		-- Colors = {Panel = Color3.fromRGB(10, 10, 10), Enter = Color3.fromRGB(255, 89, 89)},
+	},
 	Configs = true,
 	-- Floating list of keybinds. Tap/click a row to trigger it, which is how binds work on phones.
 	-- On touch-only devices, tapping a keybind's key button also triggers it (there are no keys to bind).
@@ -34,8 +49,17 @@ local Window = Library:CreateWindow({
 		Keys = {
 			"zenin-demo",                         -- never expires
 			["zenin-trial"] = os.time() + 120,    -- expires at this unix time
+			-- ["vip-key"] = {Duration = 86400, Hwid = "device-id", Users = {12345}, Note = "VIP"},
 		},
+		-- Keys that never appear in plain text: store Library.Sha256("the-key") instead.
+		-- Hashes = {"<sha256 hex>", ["<sha256 hex>"] = {Expires = 1735689600}},
 		-- Duration = 3600, -- optional: every key expires this many seconds after it was entered
+		-- CaseSensitive = false, StripSpaces = true, Pattern = "^zenin%-[%w]+$", MinLength = 6,
+		-- Whitelist = {12345, "Username", "hwid"}, -- skip the prompt entirely for these
+		-- Blacklist = {67890},                      -- never accept anything from these
+		-- BindHwid = true,  -- the saved key file is signed and only valid on the device it was saved on
+		-- Texts = {Note = "Enter your key", Verify = "Unlock", TooMany = "Wait %ds"}, -- any prompt string
+		-- ErrorFlash = true, -- red border flash on a wrong key (no shaking)
 
 		-- Your own server-side check (optional). Return true to accept (optionally with the unix
 		-- expiry time), or false plus a message. It is re-run every CheckInterval seconds, so
@@ -53,7 +77,8 @@ local Window = Library:CreateWindow({
 		SaveKey = true,
 		MaxAttempts = 5,
 		Cooldown = 30,
-		OnSuccess = function(key, info) print("Key accepted:", key, info.Expires and ("expires " .. os.date("%c", info.Expires)) or "lifetime") end,
+		OnSuccess = function(key, info) print("Key accepted:", key, info.Source, info.Expires and ("expires " .. os.date("%c", info.Expires)) or "lifetime") end,
+		-- OnFail = function(key, message, attempts) end, OnLocked = function(seconds) end,
 		-- When the key expires or is revoked: the menu closes, every element returns to its default
 		-- (callbacks fire, so features switch off), keybinds are released, the watermark is hidden,
 		-- and the key is asked again. ResetOnExpire = false keeps element values instead.
@@ -370,6 +395,36 @@ Window2:AddButton({Name = "Key Info", Callback = function()
 end})
 Window2:AddButton({Name = "Expire Key Now", Callback = function() Window:ExpireKey("Key expired (demo)") end})
 Window2:AddButton({Name = "Unload", Callback = function() Library:Unload() end})
+
+-- On-screen keyboard API (phones/tablets). Everything here also works through
+-- CreateWindow({Keyboard = {...}}).
+local KB = Actions:AddSection({Name = "Keyboard", Side = "Right"})
+KB:AddToggle({Name = "Compact Keyboard", Default = false, Callback = function(v) Library.Keyboard:SetCompact(v) end})
+KB:AddDropdown({
+	Name = "Layout", Options = Library.Keyboard:GetLayouts(), Default = "Default",
+	Callback = function(name) Library.Keyboard:SetLayout(name) end,
+})
+KB:AddSlider({Name = "Keyboard Scale", Min = 0.6, Max = 1.6, Default = 1, Step = 0.05, Callback = function(v) Library.Keyboard:SetScale(v) end})
+KB:AddButton({Name = "Dock Top / Bottom", Callback = function()
+	local cfg = Library.Keyboard:Get()
+	Library.Keyboard:SetDock(cfg.Dock == "Top" and "Bottom" or "Top")
+end})
+-- Custom layout with a custom action key and a text key.
+Library.Keyboard:AddAction("clear-all", function(kb) kb:Clear() end)
+Library.Keyboard:AddLayout("Email", {
+	Width = 0.8,
+	Rows = {
+		Library.Keyboard:Keys("qwertyuiop"),
+		{{gap = 0.5}, "a", "s", "d", "f", "g", "h", "j", "k", "l", {gap = 0.5}},
+		{{act = "shift", w = 1.5}, "z", "x", "c", "v", "b", "n", "m", {act = "back", w = 1.5}},
+		{{act = "layout", to = "Numeric", w = 1.5, label = "123"}, {text = "@"}, {text = "@gmail.com", w = 2.5}, {act = "space", w = 2.5}, {text = "."}, {act = "custom", id = "clear-all", label = "Clear", w = 1.5}, {act = "enter", w = 1.5}},
+	},
+})
+-- Hooks: return false from OnKey to swallow a key. Each hook returns a function that removes it.
+Library.Keyboard:OnKey(function(spec) if spec.act == "enter" then print("Enter pressed on the on-screen keyboard") end end)
+Library.Keyboard:OnChange(function(text) Status:SetContent("Typing: " .. text) end)
+-- Per input: Keyboard = false keeps the device keyboard, KeyboardLayout picks the starting layout.
+Inputs:AddInput({Name = "Email", Placeholder = "name@mail.com", KeyboardLayout = "Email", Callback = function(v) print("Email:", v) end})
 
 ------------------------------------------------------------------------
 -- Extras: settings page section, header button, custom theme
